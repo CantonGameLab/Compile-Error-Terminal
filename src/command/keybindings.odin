@@ -44,7 +44,7 @@ Binding :: struct {
 
 // 默认绑定表(唯一实例):结构 = 槽数组 + 计数。读写经 GetKeyBindings 指针
 // 直接操作;userapi(SetKeyBinding/ClearKeyBindings/...)是面向用户的表操作接口。
-MAX_DEFAULT_BINDINGS :: 32
+MAX_DEFAULT_BINDINGS :: 64
 
 KeyBindings :: struct {
 	bindings : [MAX_DEFAULT_BINDINGS]Binding,
