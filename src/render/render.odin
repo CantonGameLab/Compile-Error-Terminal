@@ -148,8 +148,15 @@ GetWindow :: proc() -> ^s3.Window {
 // 无边框(去系统标题栏/边框):渲染内容不变,仅窗口装饰变化。
 // 无边框后窗口无法用标题栏拖动/边缘缩放(后续需要再加 F11 全屏或自绘拖拽)。
 // ---------------------------------------------------------------------------
+borderless_on : bool
+
 SetWindowBorderless :: proc(on : bool) {
+	borderless_on = on
 	_ = s3.SetWindowBordered(window, !on)
+}
+
+GetWindowBorderless :: proc() -> bool {
+	return borderless_on
 }
 
 // ---------------------------------------------------------------------------

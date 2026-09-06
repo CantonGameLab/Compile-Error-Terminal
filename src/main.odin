@@ -94,6 +94,19 @@ initWindows :: proc() -> bool {
 	command.SetKeyBinding(.TAB, {.Ctrl}, command.ParsedCommand { kind = .PageNext })
 	command.SetKeyBinding(.TAB, {.Ctrl, .Shift}, command.ParsedCommand { kind = .PagePrev })
 
+	// Alt+数字键 → 切到对应页(页存活序 1-based,与页签次序一致)
+	command.SetKeyBinding(._1, {.Alt}, command.ParsedCommand { kind = .PageSwitch, ival = 1 })
+	command.SetKeyBinding(._2, {.Alt}, command.ParsedCommand { kind = .PageSwitch, ival = 2 })
+	command.SetKeyBinding(._3, {.Alt}, command.ParsedCommand { kind = .PageSwitch, ival = 3 })
+	command.SetKeyBinding(._4, {.Alt}, command.ParsedCommand { kind = .PageSwitch, ival = 4 })
+	command.SetKeyBinding(._5, {.Alt}, command.ParsedCommand { kind = .PageSwitch, ival = 5 })
+	command.SetKeyBinding(._6, {.Alt}, command.ParsedCommand { kind = .PageSwitch, ival = 6 })
+	command.SetKeyBinding(._7, {.Alt}, command.ParsedCommand { kind = .PageSwitch, ival = 7 })
+	command.SetKeyBinding(._8, {.Alt}, command.ParsedCommand { kind = .PageSwitch, ival = 8 })
+	command.SetKeyBinding(._9, {.Alt}, command.ParsedCommand { kind = .PageSwitch, ival = 9 })
+
+	// Alt+F → 切换无边框窗口(标题栏/边框显隐)
+	command.SetKeyBinding(.F, {.Alt}, command.ParsedCommand { kind = .ToggleBorderless })
 
 	canvas.SetDefaultLaunch(
 		"bash",
@@ -105,15 +118,15 @@ initWindows :: proc() -> bool {
 		return false
 	}
 
-	canvas.SetTheme(canvas.GRUVBOX_DARK_THEME)
+	canvas.SetTheme(canvas.MONOKAI_THEME)
 
-	render.SetBackgroundShaderEnabled(false)
+	render.SetBackgroundShaderEnabled(true)
 	render.ResetBackgroundShader()
 	render.SetVSync(true)
 
 	// 无边框窗口(去除系统标题栏/边框,render 内容不变);
 	// 无边框后窗口无法用标题栏拖动/边缘缩放(后续按需加自绘拖拽或 F11 全屏)
-	render.SetWindowBorderless(true)
+	render.SetWindowBorderless(false)
 
 	return true
 }

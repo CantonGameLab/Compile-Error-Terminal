@@ -16,6 +16,7 @@ package command
 import cv "../canvas"
 import inp "../input"
 import mem "../memory"
+import rnd "../render"
 import "core:fmt"
 import "core:strings"
 
@@ -142,6 +143,9 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 		return true
 	case .SelectAll:
 		return cv.SelectionSelectAll()
+	case .ToggleBorderless:
+		rnd.SetWindowBorderless(!rnd.GetWindowBorderless())
+		return true
 	}
 	return false
 }
@@ -197,6 +201,7 @@ CommandStringKind :: enum u8 {
 	PasteClipboard, // 剪贴板文本粘贴到焦点窗口
 	SelectionClear, // 清除文本选区
 	SelectAll, // 全选焦点窗口缓冲
+	ToggleBorderless, // 切换无边框窗口(绑定 Alt+F)
 }
 
 ParsedCommand :: struct {
@@ -437,6 +442,8 @@ ParseCommandString :: proc(s : string) -> (ParsedCommand, bool) {
 		pc.kind = .SelectionClear
 	case "selectall":
 		pc.kind = .SelectAll
+	case "toggle-borderless", "borderless":
+		pc.kind = .ToggleBorderless
 	case:
 		return {}, false
 	}
