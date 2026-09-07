@@ -110,7 +110,7 @@ initWindows :: proc() -> bool {
 
 	canvas.SetDefaultLaunch(
 		"bash",
-		"CodeNewRoman Nerd Font Mono", 26)
+		"FiraCode Nerd Font Mono", 26)
 
 	// 第一页:页根 + 根窗(自动启动默认),成为当前页
 	page := canvas.PageNew()
