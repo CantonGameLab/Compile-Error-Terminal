@@ -87,6 +87,9 @@ CreateWindowTreeRoot :: proc() -> mem.Handle {
 // 树级 TreeNodeSplit 保持纯结构;窗口分配在用户语义层(SplitNewWindow)完成。
 // 新窗按默认启动配置应用(cmd 留空 = 空白窗格不启动)。
 SplitNewWindow :: proc(dir : SplitType, id : mem.Handle = {}, new_on_first := false) -> mem.Handle {
+	if singleGuard() {
+		return {} // 单窗模式:分屏禁
+	}
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return {}
@@ -125,6 +128,14 @@ DestroyWindow :: proc(id : mem.Handle = {}) -> bool {
 	node := GetWindowTreeNode(node_h)
 	if node == nil || !node.is_leaf {
 		return false
+	}
+	// 单窗模式:被销毁 = 该页 Single 的显示中焦点窗 → 先自动回 Tiled,再走一般销毁
+	// (展示目标失效,树不可再无遮挡恢复;隐藏窗/后台页销毁则模式保留)。
+	it : mem.Iter(MAX_PAGE_SLOTS, Page) = mem.All(&pages)
+	for ph in mem.next(&it) {
+		if p := mem.Get(&pages, ph); p != nil && p.view_mode == .Single && p.focused == node_h {
+			p.view_mode = .Tiled
+		}
 	}
 	win_h := node.window_id
 	if win := GetWindow(node.window_id); win != nil {
@@ -197,6 +208,9 @@ DestroyWindow :: proc(id : mem.Handle = {}) -> bool {
 // ---------------------------------------------------------------------------
 // 设置 id(或焦点)window 的父节点 split_factor(0.05..0.95)
 SetSplitFactor :: proc(factor : f32, id : mem.Handle = {}) -> bool {
+	if singleGuard() {
+		return false // 单窗模式:尺寸调整禁
+	}
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return false
@@ -211,6 +225,9 @@ SetSplitFactor :: proc(factor : f32, id : mem.Handle = {}) -> bool {
 // 与 id(或焦点)window 的 dir 方向邻居交换窗口内容:只交换两节点的 window_id,
 // 树结构不变。focus 跟随 window:交换后焦点迁往持有"原焦点窗口"的节点。
 ExchangeWindow :: proc(dir : FocusDirection, id : mem.Handle = {}) -> bool {
+	if singleGuard() {
+		return false // 单窗模式:交换禁
+	}
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return false
@@ -237,6 +254,9 @@ ExchangeWindow :: proc(dir : FocusDirection, id : mem.Handle = {}) -> bool {
 // 认领覆盖全部 split(每个内部节点恰一个认领叶),叶子序号即所有 split_factor
 // 的统一索引。认领表内嵌于 LeafSplitOwner(局部性,不落包状态)。
 SetSplitFactorLeaf :: proc(n : int, factor : f32) -> bool {
+	if singleGuard() {
+		return false // 单窗模式:尺寸调整禁
+	}
 	if n < 1 {
 		return false
 	}
@@ -382,6 +402,10 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 			fmt.eprintln("LC: no win obj")
 			return false
 		}
+	}
+	// 单窗模式:已占用 = 启动会自动分屏(树变),拒绝;空闲 = 就地启动,允许
+	if singleGuard() && GetConsole(win.console_id) != nil {
+		return false
 	}
 	// 已有有效 console:不覆盖,split 一个新窗承载新会话;
 	// 空/悬挂引用由 GenArray 判定 == nil,一律视为空闲(自愈清 0)
@@ -579,6 +603,9 @@ ConsoleScroll :: proc(delta : int, id : mem.Handle = {}) -> bool {
 // ---------------------------------------------------------------------------
 // 设置 id 为当前焦点
 SetFocusWindow :: proc(id : mem.Handle) -> bool {
+	if singleGuard() {
+		return false // 单窗模式:焦点切换禁
+	}
 	if GetWindowTreeNode(id) == nil {
 		return false
 	}
@@ -592,6 +619,9 @@ SetFocusWindow :: proc(id : mem.Handle) -> bool {
 
 // 将 id(或焦点)window 的 dir 方向指向的 window 设为焦点
 FocusMove :: proc(dir : FocusDirection, id : mem.Handle = {}) -> bool {
+	if singleGuard() {
+		return false // 单窗模式:焦点切换禁
+	}
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return false
@@ -626,6 +656,14 @@ WindowCount :: proc() -> int {
 // ---------------------------------------------------------------------------
 // 内部辅助
 // ---------------------------------------------------------------------------
+// 单窗模式守卫:当前页 view_mode == .Single 时,树/焦点/尺寸类操作一律拒绝。
+// 页规则集中在这一处(域边界守点):命令栏、绑定、指令通道、任何将来入口
+// 都经本层 userapi 生效;命令解释层不重复判定。
+singleGuard :: proc() -> bool {
+	p := CurrentPage()
+	return p != nil && p.view_mode == .Single
+}
+
 // id 省略(0)时解析为当前焦点
 resolveWindow :: proc(id : mem.Handle) -> mem.Handle {
 	if id.id != 0 {

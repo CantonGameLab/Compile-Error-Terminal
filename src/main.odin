@@ -108,6 +108,8 @@ initWindows :: proc() -> bool {
 	// Alt+F → 切换无边框窗口(标题栏/边框显隐)
 	command.SetKeyBinding(.F, {.Alt}, command.ParsedCommand { kind = .ToggleBorderless })
 
+	command.SetKeyBinding(.S, {.Alt}, command.ParsedCommand { kind = .ToggleSingleMode })
+
 	canvas.SetDefaultLaunch(
 		"bash",
 		"FiraCode Nerd Font Mono", 26)
@@ -118,10 +120,9 @@ initWindows :: proc() -> bool {
 		return false
 	}
 
-	canvas.SetTheme(canvas.MONOKAI_THEME)
+	canvas.SetTheme(canvas.TANGO_DARK_THEME)
 
-	render.SetBackgroundShaderEnabled(true)
-	render.ResetBackgroundShader()
+	render.ResetBackgroundShader() // 背景恒走 FBO → background.frag(纯色 = 改 shader)
 	render.SetVSync(true)
 
 	// 无边框窗口(去除系统标题栏/边框,render 内容不变);

@@ -1,8 +1,9 @@
 // 背景可编程 shader:终端背景(主题打底 + 全部 cell 底色)先渲染到 RGBA8 纹理,
 // 再经用户片段 shader 变换输出(字形/光标/UI 不受影响,在其上直接绘制)。
-// 开关 off = 传统路径(背景矩形直接上屏,零行为变化);on = FBO 路径。
+// 背景恒定走 FBO 路径(无"纯色模式"开关);要纯色背景 = 改 background.frag
+// (直接输出 uBg 即可),或 SetBackgroundShader 换成自定义源码。
 // 默认加载 resource/shader/background.frag(完整 GLSL,自带 main/声明);
-// 源码编译失败保留旧 shader(自愈),文件缺失 = 背景 pass 不可用。
+// 源码编译失败保留旧 shader(自愈),文件缺失 = 背景批直接上屏兜底。
 package render
 
 import gl "vendor:OpenGL"
@@ -15,8 +16,6 @@ import "core:strings"
 // 默认背景 shader 文件(相对 src.exe 工作目录)
 BG_SHADER_PATH :: "resource/shader/background.frag"
 
-bg_enabled : bool
-
 bg_shader_src : string // 当前源码(文件内容/Set 传入)
 bg_program : u32 // 0 = 未编译
 bg_u_bg, bg_u_screen, bg_u_time : i32
@@ -24,11 +23,6 @@ bg_u_bg, bg_u_screen, bg_u_time : i32
 bg_fbo : u32
 bg_tex : u32
 bg_tex_w, bg_tex_h : u32
-
-// 开关:false = 背景矩形直接屏幕(传统);true = 背景批 → FBO → shader → 屏幕
-SetBackgroundShaderEnabled :: proc(on : bool) {
-	bg_enabled = on
-}
 
 // 读取默认背景 shader 文件并编译(render.Init 调用;失败 = 打印警告)
 InitBackgroundShader :: proc() -> bool {
@@ -69,7 +63,6 @@ SetBackgroundShader :: proc(src : string) -> bool {
 
 // 清理(render.Quit 调)
 BackgroundShaderQuit :: proc() {
-	bg_enabled = false
 	if bg_shader_src != "" {
 		delete(bg_shader_src)
 		bg_shader_src = ""
@@ -100,12 +93,16 @@ compileBgShader :: proc(src : string) -> u32 {
 
 // 背景 pass(每帧,主批 flush 前):背景批 → FBO → 全屏 quad(bg shader)→ 屏幕
 drawBackgroundPass :: proc(time_s : f32) {
-	if !bg_enabled || bg_quad_count == 0 {
+	if bg_quad_count == 0 {
 		return
 	}
 	if bg_program == 0 {
 		if !InitBackgroundShader() {
-			return // 缺文件/编译失败:本帧跳过(传统路径不恶化)
+			// 缺文件/编译失败:背景批直接上屏(纯色兜底,不引入模式开关);
+			// 字形趟随后在主批,顺序不变
+			gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
+			flushBgBatch()
+			return
 		}
 	}
 	w, h := GetWindowSize()

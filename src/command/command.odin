@@ -42,6 +42,8 @@ Update :: proc() {
 }
 
 // 数据化命令 → userapi(唯一解释器;kind 全集见 CommandStringKind)
+// 单窗模式(Single)的树/焦点/尺寸禁用规则在 canvas 域边界(userapi 函数内
+// singleGuard)统一判定:命令拦不拦,userapi 自己按当前页语义拒绝。
 ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> bool {
 	switch cmd.kind {
 	case .Split:
@@ -146,6 +148,9 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 	case .ToggleBorderless:
 		rnd.SetWindowBorderless(!rnd.GetWindowBorderless())
 		return true
+	case .ToggleSingleMode:
+		cv.ToggleSingleMode()
+		return true
 	}
 	return false
 }
@@ -202,6 +207,7 @@ CommandStringKind :: enum u8 {
 	SelectionClear, // 清除文本选区
 	SelectAll, // 全选焦点窗口缓冲
 	ToggleBorderless, // 切换无边框窗口(绑定 Alt+F)
+	ToggleSingleMode, // 单窗显示模式:焦点窗独占树区(页级,树不动;命令别名 single)
 }
 
 ParsedCommand :: struct {
@@ -444,6 +450,8 @@ ParseCommandString :: proc(s : string) -> (ParsedCommand, bool) {
 		pc.kind = .SelectAll
 	case "toggle-borderless", "borderless":
 		pc.kind = .ToggleBorderless
+	case "single", "single-mode":
+		pc.kind = .ToggleSingleMode
 	case:
 		return {}, false
 	}

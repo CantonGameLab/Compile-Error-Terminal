@@ -54,6 +54,11 @@ splitDragUpdate :: proc(m : ^inp.MouseState) {
 		split_drag.active = false
 		return
 	}
+	// 单窗模式:分割条不可见,拖拽作废(模式切换自愈)
+	if p := CurrentPage(); p != nil && p.view_mode == .Single {
+		split_drag.active = false
+		return
+	}
 	if m.release & 1 != 0 {
 		split_drag.active = false
 		return
@@ -89,14 +94,25 @@ updateCursor :: proc() {
 	if !inp.Mouse.x_ok || inp.Mouse.left || inp.Mouse.press != 0 {
 		return
 	}
-	if h := SplitFrameHit(inp.Mouse.x, inp.Mouse.y); h.id != 0 {
-		if node := GetWindowTreeNode(h); node != nil {
-			inp.SetCursor(axisCursor(node.split_type))
-			return
+	// 单窗模式:分割条不可见 → 无轴光标;悬停窗 = 页焦点(选区光标按它判定)
+	p := CurrentPage()
+	single := p != nil && p.view_mode == .Single
+	if !single {
+		if h := SplitFrameHit(inp.Mouse.x, inp.Mouse.y); h.id != 0 {
+			if node := GetWindowTreeNode(h); node != nil {
+				inp.SetCursor(axisCursor(node.split_type))
+				return
+			}
 		}
 	}
 	// 悬停在被选 buffer 的选区内 → 文本光标(Windows 惯例:选区即文本光标)
-	if n := nodeAtPoint(inp.Mouse.x, inp.Mouse.y); n.id != 0 {
+	n : mem.Handle
+	if single {
+		n = p.focused
+	} else {
+		n = nodeAtPoint(inp.Mouse.x, inp.Mouse.y)
+	}
+	if n.id != 0 {
 		if win := NodeWindow(n); win != nil {
 			console := GetConsole(win.console_id)
 			if console != nil && selection.buffer_h.id != 0 &&

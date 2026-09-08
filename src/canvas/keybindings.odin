@@ -1,6 +1,7 @@
 // 鼠标路由(功能层):消费 input 鼠标通道 → 窗口交互。
 // 键绑定/命令在 command 模块(消费链:command 先行);本文件只管鼠标。
 // 鼠标:滚轮 → review、点击 → 聚焦、应用鼠标模式(1000/1002/1003)→ SGR 编码写回。
+// 单窗模式(页 view_mode == .Single):分割条不命中/不拖拽,目标一律 = 页焦点。
 package canvas
 
 import ct "../conpty"
@@ -30,6 +31,9 @@ ProcessMouse :: proc() {
 	if m.release & 1 != 0 && selection.active {
 		selection.active = false
 	}
+	// 单窗模式(Single):分割条不可见/不可拖;命中目标 = 页焦点(点击不换焦点)
+	p := CurrentPage()
+	single := p != nil && p.view_mode == .Single
 	// 页签条命中(按下):切换页 / 新建页
 	if m.press != 0 {
 		if kind, index := TabBarHit(m.x, m.y); kind != .None {
@@ -42,14 +46,21 @@ ProcessMouse :: proc() {
 			}
 			return
 		}
-		// 分割条命中(左键按下):开始拖拽(条在窗口边缘内 pad 像素,优先于聚焦)
-		if m.press & 1 != 0 {
+		// 分割条命中(左键按下):开始拖拽(条在窗口边缘内 pad 像素,优先于聚焦);
+		// 单窗模式下分割条不可见,跳过命中
+		if m.press & 1 != 0 && !single {
 			if h := SplitFrameHit(m.x, m.y); h.id != 0 && splitDragBegin(h, m.x, m.y) {
 				return
 			}
 		}
 	}
-	node_h := nodeAtPoint(m.x, m.y)
+	// 单窗:树区任意点 = 页焦点;平铺:点所在 leaf
+	node_h : mem.Handle
+	if single {
+		node_h = p.focused
+	} else {
+		node_h = nodeAtPoint(m.x, m.y)
+	}
 	if node_h.id == 0 {
 		return
 	}

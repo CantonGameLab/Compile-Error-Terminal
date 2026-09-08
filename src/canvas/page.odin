@@ -1,6 +1,6 @@
-// 页数据:每页一棵独立窗口树(页持有根句柄 + 页内焦点)。
+// 页数据:每页一棵独立窗口树(页持有根句柄 + 页内焦点 + 显示模式)。
 // 一棵树 = 一个"标签页":树节点表/console/font/window 均全局,页只是组织层
-// (根引用 + 焦点记忆);句柄体系不变(id+世代全局唯一,页切换无迁移)。
+// (根引用 + 焦点记忆 + 显示模式);句柄体系不变(id+世代全局唯一,页切换无迁移)。
 // 根槽不再固定:根 = 普通 Alloc(parent_id = 0),页槽持有;根壳常驻/吸收逻辑不变。
 package canvas
 
@@ -26,11 +26,18 @@ CMD_VIEW_W :: f32(320) // 命令栏输入框宽
 FPS_TAG_W :: f32(64) // FPS 标签宽
 TOOL_GAP :: f32(6) // 工具区与页签区最小间距
 
+// 页显示模式:焦点窗如何占用树区(状态类参量一律枚举)
+PageMode :: enum u8 {
+	Tiled,   // 平铺:按树几何显示全部窗口(默认;零值 = 安全空态)
+	Single,  // 单窗:焦点窗独占树区显示,树结构不动
+}
+
 Page :: struct {
 	title : [32]u8, // 页标题(定长,截断;默认 = 页序号)
 	title_len : u8,
 	tree_root : mem.Handle, // 本页树根(空叶;页销毁时整树释放)
 	focused : mem.Handle, // 页内焦点(每页记忆,切换即复用,无同步)
+	view_mode : PageMode, // 显示模式;写者 = ToggleSingleMode + DestroyWindow(销毁显示窗自愈回 Tiled)
 }
 
 pages : mem.GenArray(MAX_PAGE_SLOTS, Page)
@@ -146,6 +153,25 @@ PageSwitch :: proc(page_h : mem.Handle) -> bool {
 		return false
 	}
 	current_page = page_h
+	return true
+}
+
+// ---------------------------------------------------------------------------
+// 显示模式(页属性):Tiled 平铺 / Single 单窗(焦点窗独占树区,树不动)
+// ---------------------------------------------------------------------------
+// userapi 翻转当前页模式;返回翻转后是否 Single。
+// 语义:树结构零改动;布局/渲染/鼠标按 有效矩形(WindowEffectiveRect)覆盖解释。
+// 写者 = 本函数(用户开关)+ DestroyWindow(销毁显示中的焦点窗先自动回 Tiled)。
+ToggleSingleMode :: proc() -> bool {
+	p := CurrentPage()
+	if p == nil {
+		return false
+	}
+	if p.view_mode == .Single {
+		p.view_mode = .Tiled
+		return false
+	}
+	p.view_mode = .Single
 	return true
 }
 

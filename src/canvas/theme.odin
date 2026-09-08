@@ -238,6 +238,32 @@ ONE_DARK_THEME := Theme {
 	selection_fg = 0xABB2BF,
 }
 
+// Tango Dark(Windows Terminal 官方 scheme,TerminalSettingsModel/defaults.json):
+// bg #000000 / fg #D3D7CF(即 white);accent = brightBlue #729FCF;
+// 分割条/选区 = 暗灰 #555753(低调,同 Dracula/Nord 的"selection 灰"做法)
+TANGO_DARK_THEME := Theme {
+	fg = 0xD3D7CF,
+	bg = 0x000000,
+	cursor = 0xFFFFFF,
+	ansi = {
+		0x000000, 0xCC0000, 0x4E9A06, 0xC4A000,
+		0x3465A4, 0x75507B, 0x06989A, 0xD3D7CF,
+		0x555753, 0xEF2929, 0x8AE234, 0xFCE94F,
+		0x729FCF, 0xAD7FA8, 0x34E2E2, 0xEEEEEC,
+	},
+	frame = 0x555753,
+	focus_border = 0x729FCF,
+	fps_bg = 0x0A0A0C,
+	fps_fg = 0x555753,
+	tab_bar_bg = 0x0A0A0C,
+	tab_fg = 0x555753,
+	tab_active_bg = 0x000000, // = bg(WT 式背景延伸)
+	tab_active_fg = 0xD3D7CF,
+	tab_hover_bg = 0x1E1E1E,
+	selection_bg = 0x555753,
+	selection_fg = 0xD3D7CF,
+}
+
 // userapi:整表替换(配置入口/main.initWindows);下一帧渲染全部按新表解码(缓冲零重写)
 SetTheme :: proc(t : Theme) {
 	current_theme = t

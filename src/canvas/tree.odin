@@ -617,6 +617,21 @@ RecalculateTransforms :: proc(h : mem.Handle) {
 	RecalculateTransforms(node.right_son_id)
 }
 
+// 有效矩形(显示派生,唯一公式):当前页 Single(单窗)且 h == 页焦点 → 树区根矩形
+// (页根 transform = 整棵树的显示区域),其余一律节点自身矩形。
+// 布局(layoutWalk)/ 渲染(打底背景 / 焦点边框)共用此单真值,不许别处再写分支。
+WindowEffectiveRect :: proc(h : mem.Handle) -> Transform {
+	if n := GetWindowTreeNode(h); n != nil {
+		if p := CurrentPage(); p != nil && p.view_mode == .Single && p.focused == h {
+			if root := GetWindowTreeNode(p.tree_root); root != nil {
+				return root.transform
+			}
+		}
+		return n.transform
+	}
+	return {}
+}
+
 // 收集子树内所有 leaf 节点(定长数组,不分配)
 collectLeaves :: proc(h : mem.Handle, leaves : ^[MAX_TREE_NODE_SLOTS]mem.Handle, count : ^int) {
 	node := GetWindowTreeNode(h)
@@ -837,7 +852,8 @@ ConsoleUpdateTree :: proc(node_h : mem.Handle) {
 			return
 		}
 		m := fnt.GetMetrics(win.font_id) // 字体 = 窗口配置(唯一真相;console 无副本)
-		ConsoleUpdateLayout(win.console_id, node.transform, m.cell_width, m.cell_height)
+		// 单窗模式:焦点窗布局用有效矩形(树区),隐藏窗照常用自身节点矩形(值不变)
+		ConsoleUpdateLayout(win.console_id, WindowEffectiveRect(node_h), m.cell_width, m.cell_height)
 	}
 
 }

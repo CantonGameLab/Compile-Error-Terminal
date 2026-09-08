@@ -1,5 +1,7 @@
 // 场景绘制:只读遍历窗口树,把每个 leaf 节点的 Console 画到屏幕。
 // 消费现有模型(窗口树 / Console / TermBuffer / font),零数据写回。
+// 单窗模式(页 view_mode == .Single):只画当前页焦点 leaf(有效矩形 = 树区),
+// 其余窗口隐藏、分割条不画;与布局同用 cv.WindowEffectiveRect 单公式。
 package render
 
 import cv "../canvas"
@@ -14,36 +16,45 @@ import "core:time"
 // 原因:主批 push 阶段会因纹理切换提前 flush,若字形先于背景 pass 上屏会被全屏
 // quad 覆盖;分开两趟保证"背景先定、字形后画"。
 DrawFrame :: proc() {
-	drawWalk(cv.WindowTreeRoot(), true)
+	p := cv.CurrentPage()
+	single := p != nil && p.view_mode == .Single
+	drawWalk(cv.WindowTreeRoot(), true, single)
 	// 背景延伸成员(均在背景 pass 前进背景批 → 与内容区同一 shader):
 	//   焦点描边 + 激活页签底(输入色 = theme.bg → shader 后同值,无缝融合)
 	drawFocusBorder()
 	drawTabBarActiveBg()
-	drawBackgroundPass(f32(s3.GetTicks()) / 1000.0) // 背景批 → FBO → shader(开关 on)
-	drawWalk(cv.WindowTreeRoot(), false)
+	drawBackgroundPass(f32(s3.GetTicks()) / 1000.0) // 背景批 → FBO → 背景 shader
+	drawWalk(cv.WindowTreeRoot(), false, single)
 	// 底部页签条(状态栏雏形):条底 + 页签 + 右侧工具区(命令栏输入框、FPS)
 	drawTabBar()
 	drawCommandBar()
 	drawFps()
 	flushBatch()
 
-	drawWalk :: proc(node_h : mem.Handle, bg : bool) {
+	drawWalk :: proc(node_h : mem.Handle, bg : bool, single : bool) {
 		node := cv.GetWindowTreeNode(node_h)
 		if node == nil {
 			return
 		}
 		if !node.is_leaf {
 			// 先画子树(背景被 frame 覆盖),再画分割条(分割条属前景,仅第 2 趟)
-			drawWalk(node.left_son_id, bg)
-			drawWalk(node.right_son_id, bg)
-			if !bg {
+			drawWalk(node.left_son_id, bg, single)
+			drawWalk(node.right_son_id, bg, single)
+			if !bg && !single {
 				drawFrame(node_h)
 			}
 			return
 		}
+		// 单窗:只画当前页焦点 leaf(其余窗口隐藏)
+		if single {
+			p := cv.CurrentPage()
+			if p == nil || p.focused != node_h {
+				return
+			}
+		}
 		win := cv.NodeWindow(node_h)
 		if win != nil {
-			drawConsole(node_h, bg) // 内部按 console 句柄判定,无 console 直返
+			drawConsole(node_h, bg, cv.WindowEffectiveRect(node_h)) // 内部按 console 句柄判定,无 console 直返
 		}
 	}
 }
@@ -191,18 +202,17 @@ drawFocusBorder :: proc() {
 	if focus.id == 0 {
 		return
 	}
-	node := cv.GetWindowTreeNode(focus)
-	if node == nil {
+	if cv.GetWindowTreeNode(focus) == nil {
 		return
 	}
-	t := node.transform
+	t := cv.WindowEffectiveRect(focus) // 单窗下 = 树区整圈(显示边界指示)
 	if t.width <= 0 || t.height <= 0 {
 		return
 	}
 	d := FOCUS_BORDER_WIDTH
 	c := theme.focus_border
-	// DrawRectBg = 背景批(开关 on → FBO/背景 shader;off → 直接屏幕)。
-	// 与背景共用 shader:纯色背景 = 纯色边框;shader 背景 = 边框同变换延伸。
+	// DrawRectBg = 背景批(FBO → 背景 shader;与背景共用同一 shader:
+	// 纯色背景 = 纯色边框;shader 背景 = 边框同变换延伸)。
 	DrawRectBg(t.position_x, t.position_y, t.width, d, c) // 上
 	DrawRectBg(t.position_x, t.position_y + t.height - d, t.width, d, c) // 下
 	DrawRectBg(t.position_x, t.position_y, d, t.height, c) // 左
@@ -295,7 +305,7 @@ drawFrame :: proc(node_h : mem.Handle) {
 	}
 }
 
-drawConsole :: proc(node_h : mem.Handle, bg : bool) {
+drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 	theme := cv.GetTheme()
 	node := cv.GetWindowTreeNode(node_h)
 	if node == nil {
@@ -313,7 +323,6 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool) {
 	if m.cell_width <= 0 || m.cell_height <= 0 {
 		return
 	}
-	t := node.transform
 
 	// 打底背景(仅第 1 趟:背景批 → FBO → 背景 shader)
 	if bg {

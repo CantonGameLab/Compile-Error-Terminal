@@ -224,14 +224,10 @@ DrawRect :: proc(x, y, w, h : f32, color : u32) {
 	pushQuad(white_tex, x, y, x + w, y + h, 0, 0, 1, 1, color)
 }
 
-// 终端背景矩形(打底 / cell 底色):开关 off = 直接屏(主批);
-// on = 进背景批(帧末 → FBO → 背景 shader → 屏幕),字形不受影响
+// 终端背景矩形(打底 / cell 底色):恒进背景批(帧尾 → FBO → 背景 shader → 屏幕),
+// 与字形批分离(字形不受 shader 变换影响);无"纯色模式",纯色 = 改 background.frag。
 DrawRectBg :: proc(x, y, w, h : f32, color : u32) {
-	if bg_enabled {
-		pushBgQuad(x, y, x + w, y + h, color)
-	} else {
-		pushQuad(white_tex, x, y, x + w, y + h, 0, 0, 1, 1, color)
-	}
+	pushBgQuad(x, y, x + w, y + h, color)
 }
 
 // 单字形,(x, y) = 基线位置;返回前进宽,无字形时按格宽。

@@ -393,14 +393,14 @@ DrawRect / DrawRune / DrawGlyphById / DrawText / DrawRectBg
 DrawFrame()                                  // 无参:两趟遍历(背景趟 → 背景 pass → 字形趟)
 drawTabBar()                                 // 底部页签条(几何/命中在 canvas,渲染只读)
 // 背景可编程 shader(源码外置 resource/shader/:main.vert / main.frag / background.frag)
-InitBackgroundShader() -> bool               // 读 background.frag 编译(缺文件 = 背景 pass 不可用)
+InitBackgroundShader() -> bool               // 读 background.frag 编译(缺文件 = 背景批直接上屏兜底)
 SetBackgroundShader(src) -> bool             // 运行时替换(完整 GLSL;编译失败保留旧)
 ResetBackgroundShader() -> bool              // 重读默认文件(热重载)
-SetBackgroundShaderEnabled(on)               // 开关:off = 背景矩形直接屏幕(传统路径)
-BackgroundShaderEnabled() -> bool
-// 背景语义:theme 打底 + 全部 cell 底色先渲染到 RGBA8 纹理(uBg),经用户片段 shader 变换
-// 输出;字形/光标/UI 不受影响。帧序:第 1 趟画背景 → 背景 pass(FBO+shader)→ 第 2 趟画字形
-// (分两趟原因:主批 push 会因纹理切换提前 flush,字形先上屏会被全屏 quad 覆盖)
+// 背景恒定走 FBO → 用户片段 shader(无"纯色模式"开关);要纯色背景 = 直接改
+// background.frag(直接输出 uBg)。语义:theme 打底 + 全部 cell 底色先渲染到 RGBA8
+// 纹理(uBg),经 shader 变换输出;字形/光标/UI 不受影响。帧序:第 1 趟画背景 →
+// 背景 pass(FBO+shader)→ 第 2 趟画字形(分两趟原因:主批 push 会因纹理切换提前
+// flush,字形先上屏会被全屏 quad 覆盖)
 ```
 
 ## 6. 对外扩展接口
