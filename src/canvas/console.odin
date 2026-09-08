@@ -82,7 +82,7 @@ GetConsole :: proc(h : mem.Handle) -> ^Console {
 }
 
 // 销毁 console 本体:会话(读线程 + ConPTY)+ 视口。
-// 本函数不摸窗口层数据;窗口对它的引用由窗口层调用方先经 clearConsoleRefs 断干净。
+// 唯一拥有者 = 窗口(console_id);窗口销毁路径先调本函数再 DestroyWindowSlot。
 DestroyConsole :: proc(h : mem.Handle) {
 	console := GetConsole(h)
 	if console == nil {

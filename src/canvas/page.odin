@@ -136,7 +136,6 @@ destroyPageTree :: proc(root : mem.Handle) {
 	collectLeaves(root, &leaves, &count)
 	for i in 0 ..< count {
 		if win := NodeWindow(leaves[i]); win != nil {
-			clearConsoleRefs(win.console_id)
 			DestroyConsole(win.console_id)
 			DestroyWindowSlot(GetWindowTreeNode(leaves[i]).window_id)
 		}

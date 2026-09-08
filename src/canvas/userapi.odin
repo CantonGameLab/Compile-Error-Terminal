@@ -140,7 +140,6 @@ DestroyWindow :: proc(id : mem.Handle = {}) -> bool {
 	win_h := node.window_id
 	if win := GetWindow(node.window_id); win != nil {
 		// 关闭会话:先断引用再销毁(GenArray 句柄各自判定,DestroyConsole 只销毁本体)
-		clearConsoleRefs(win.console_id)
 		DestroyConsole(win.console_id)
 		// 窗口槽释放内含字体引用释放(ReleaseFont)
 		DestroyWindowSlot(win_h)
@@ -364,22 +363,8 @@ ClearWindowConsole :: proc(id : mem.Handle = {}) -> bool {
 		fmt.eprintln("CWC: no console")
 		return false
 	}
-	clearConsoleRefs(win.console_id)
 	DestroyConsole(win.console_id)
 	return true
-}
-
-// 断掉所有指向 console_h 的引用(窗口 console_id)。
-// 窗口层销毁会话前的第一步:避免悬挂句柄让"空闲窗口"被误判占用。
-clearConsoleRefs :: proc(h : mem.Handle) {
-	it : mem.Iter(MAX_WINDOW_SLOTS, Window) = mem.All(&windows)
-	for wh in mem.next(&it) {
-		if w := mem.Get(&windows, wh); w != nil {
-			if w.console_id == h {
-				w.console_id = {}
-			}
-		}
-	}
 }
 
 // ---------------------------------------------------------------------------
