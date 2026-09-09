@@ -12,8 +12,9 @@ import gl "vendor:OpenGL"
 import win "core:sys/windows"
 import "core:c"
 import "core:fmt"
-import "core:os"
+import "core:io"
 import "core:math"
+import "core:os"
 import "core:strings"
 import mem "../memory"
 
@@ -125,8 +126,7 @@ fonts : mem.RefCounted(MAX_FONT_SLOTS, Font)
 // 规范化字体名:去尾部 "(TrueType)"/"(OpenType)"/"(All res)" 等注记,忽略空格/连字符/下划线,大写。
 // 使 "FiraCodeNerdFontMono" 与显示名 "FiraCode Nerd Font Mono (TrueType)" 互相命中。
 // 结果写入调用方缓冲(Odin 的 string([]byte) 是零拷贝 cast,不能返回栈上缓冲)。
-normalizeFontName :: proc(s : string, buf : []byte) -> string {
-	n := 0
+normalizeFontName :: proc(s : string, buf : []byte) -> string {	n := 0
 	end := len(s)
 	if end > 0 && s[end - 1] == ')' {
 		for i := end - 1; i >= 0; i -= 1 {
@@ -197,6 +197,60 @@ faceFamilyNameFromPath :: proc(path : string, out : []byte) -> string {
 	return faceFamilyName(&f, out)
 }
 
+// NerdFonts 缩写感知的家族名比较:文件内 family 常为缩写
+// ("CaskaydiaCove NF" / "CaskaydiaCove NFM"),用户输入为全称
+// ("CaskaydiaCove Nerd Font" / "... Nerd Font Mono"),双向折叠比较。
+fontNamesEqual :: proc(a, b : string) -> bool {
+	ab, bb : [256]byte
+	na := normalizeFontName(a, ab[:])
+	nb := normalizeFontName(b, bb[:])
+	if na == nb {
+		return true
+	}
+	ca, cb : [256]byte
+	return nfCompact(na, ca[:]) == nfCompact(nb, cb[:])
+}
+
+// NERDFONT 族缩写折叠(输入须已 normalize:全大写、无空格/连字符)
+nfCompact :: proc(s : string, buf : []byte) -> string {
+	n := 0
+	i := 0
+	for i < len(s) {
+		switch {
+		case strings.has_prefix(s[i:], "NERDFONTMONO"):
+			if n + 3 <= len(buf) {
+				buf[n] = 'N'
+				buf[n + 1] = 'F'
+				buf[n + 2] = 'M'
+				n += 3
+			}
+			i += 12
+		case strings.has_prefix(s[i:], "NERDFONTPROPO"):
+			if n + 3 <= len(buf) {
+				buf[n] = 'N'
+				buf[n + 1] = 'F'
+				buf[n + 2] = 'P'
+				n += 3
+			}
+			i += 13
+		case strings.has_prefix(s[i:], "NERDFONT"):
+			if n + 2 <= len(buf) {
+				buf[n] = 'N'
+				buf[n + 1] = 'F'
+				n += 2
+			}
+			i += 8
+		case:
+			if n < len(buf) {
+				buf[n] = s[i]
+				n += 1
+			}
+			i += 1
+		}
+	}
+	return string(buf[:n])
+}
+
 // 注册表字体名 → 文件路径:HKLM\...\CurrentVersion\Fonts 的值名 = 显示名,值 = 文件名/路径。
 // Windows 的"字体名"(如 FiraCode Nerd Font Mono)与文件名(FiraCodeNerdFontMono-Regular.ttf)
 // 关系无规则,注册表是唯一可靠映射。匹配顺序:
@@ -236,7 +290,7 @@ registryFontPath :: proc(input : string) -> (path : string, ok : bool) {
 		}
 		disp := win.utf16_to_utf8_buf(disp_buf[:], name_buf[:name_len])
 		d := normalizeFontName(disp, d_buf[:])
-		is_exact := d == target
+		is_exact := d == target || fontNamesEqual(disp, input)
 		is_pref := strings.has_prefix(d, target)
 		if !is_exact && !is_pref {
 			continue
@@ -259,9 +313,10 @@ registryFontPath :: proc(input : string) -> (path : string, ok : bool) {
 			exact_file = strings.clone(full)
 			exact_ok = true
 		}
-		// 文件内 family 名是最终权威(注册表名可能带权重缩写 Reg/Ret 等)
+		// 文件内 family 名是最终权威(注册表名可能带权重缩写 Reg/Ret 等);
+		// 匹配容忍 NerdFonts 缩写(文件内 "X NF" ↔ 用户 "X Nerd Font")
 		fam_buf : [256]byte
-		if fam := faceFamilyNameFromPath(full, fam_buf[:]); fam == target {
+		if fam := faceFamilyNameFromPath(full, fam_buf[:]); fontNamesEqual(fam, input) {
 			prefer := !strings.contains(d, "BOLD") &&
 				!strings.contains(d, "LIGHT") &&
 				!strings.contains(d, "ITALIC") &&
@@ -339,8 +394,221 @@ resolveFontPath :: proc(path_or_name : string) -> (path : string, is_alloc : boo
 	if p, ok := registryFontPath(path_or_name); ok {
 		return p, true
 	}
+	// 注册表也没有:系统目录内按"文件内 family 名"索引(不依赖注册表登记 ——
+	// 手动复制安装/注册表缺失的字体族也能按用户所见名解析,如 CaskaydiaCove Nerd Font)
+	if p, ok := fontIndexLookup(path_or_name); ok {
+		return p, true
+	}
 	// 都没有:原样返回(当作完整路径)
 	return path_or_name, false
+}
+
+// ---------------------------------------------------------------------------
+// 系统字体目录索引:按文件内 family 名(轻量读头,不读全文件)建一次;
+// 解决"文件在 Fonts 目录但未登记注册表"的字体族解析(常见于手动安装)。
+// ---------------------------------------------------------------------------
+FONT_INDEX_MAX :: 512
+
+font_index_names : [FONT_INDEX_MAX]string // 规范化 family 名(堆分配)
+font_index_paths : [FONT_INDEX_MAX]string // 完整路径(堆分配)
+font_index_prefer : [FONT_INDEX_MAX]bool // regular 档优先
+font_index_count : int
+font_index_built : bool
+
+buildFontIndex :: proc() {
+	if font_index_built {
+		return
+	}
+	font_index_built = true
+	scanFontDir(SYSTEM_FONT_DIR)
+	// 项目内置字体(resource/font/<FamilyDir>):未安装到系统的机器同样可解析
+	if entries, err := os.read_directory_by_path("resource/font", -1, context.allocator); err == nil {
+		for e in entries {
+			if e.type == .Directory {
+				scanFontDir(fmt.tprintf("resource/font/%s", e.name))
+			}
+		}
+		os.file_info_slice_delete(entries, context.allocator)
+	}
+}
+
+scanFontDir :: proc(dir : string) {
+	entries, err := os.read_directory_by_path(dir, -1, context.allocator)
+	if err != nil {
+		return
+	}
+	defer os.file_info_slice_delete(entries, context.allocator)
+	for e in entries {
+		if font_index_count >= FONT_INDEX_MAX {
+			return
+		}
+		if !isFontExt(e.name) {
+			continue
+		}
+		fam := FontFamilyFromFile(e.fullpath)
+		if len(fam) == 0 {
+			continue
+		}
+		font_index_names[font_index_count] = strings.clone(fam)
+		font_index_paths[font_index_count] = strings.clone(e.fullpath)
+		font_index_prefer[font_index_count] = isRegularFileName(e.name)
+		font_index_count += 1
+		delete(fam)
+	}
+}
+
+isFontExt :: proc(name : string) -> bool {
+	return strings.has_suffix(name, ".ttf") ||
+		strings.has_suffix(name, ".otf") ||
+		strings.has_suffix(name, ".ttc")
+}
+
+// regular 档(文件名不含权重/斜体标记)
+isRegularFileName :: proc(name : string) -> bool {
+	marks := []string{ "Bold", "Light", "Italic", "Medium", "Med", "Semi", "Black", "Extra" }
+	for m in marks {
+		if strings.contains(name, m) {
+			return false
+		}
+	}
+	return true
+}
+
+fontIndexLookup :: proc(input : string) -> (path : string, ok : bool) {
+	buildFontIndex()
+	sel := -1
+	for i in 0 ..< font_index_count {
+		if fontNamesEqual(font_index_names[i], input) {
+			if sel < 0 || (font_index_prefer[i] && !font_index_prefer[sel]) {
+				sel = i
+			}
+		}
+	}
+	if sel < 0 {
+		return "", false
+	}
+	return strings.clone(font_index_paths[sel]), true
+}
+
+// 轻量读取字体 family 名:分步 seek(文件头 → name 表记录 → 目标字符串),
+// 不读全文件(大字体 name 表常深藏文件后部)。返回堆 string(调用方 delete)。
+FontFamilyFromFile :: proc(path : string) -> string {
+	f, err := os.open(path)
+	if err != nil {
+		return ""
+	}
+	defer os.close(f)
+	head : [12]u8
+	if _, rerr := os.read(f, head[:]); rerr != nil {
+		return ""
+	}
+	num_tables := int(u16be(head[:], 4))
+	if num_tables <= 0 || num_tables > 64 {
+		return ""
+	}
+	// 读目录表找到 name 表偏移/长度
+	dirbuf := make([]byte, 12 + num_tables * 16)
+	defer delete(dirbuf)
+	if _, rerr := os.read(f, dirbuf); rerr != nil {
+		return ""
+	}
+	name_off, name_len := 0, 0
+	for i in 0 ..< num_tables {
+		rec := i * 16 // dirbuf 从文件偏移 12(目录表起点)读起,内部索引从 0 计
+		if string(dirbuf[rec:rec + 4]) == "name" {
+			name_off = int(u32be(dirbuf, rec + 8))
+			name_len = int(u32be(dirbuf, rec + 12))
+			break
+		}
+	}
+	if name_off <= 0 || name_len <= 0 {
+		return ""
+	}
+	// name 表偏移定位
+	if _, e := os.seek(f, i64(name_off), io.Seek_From.Start); e != nil {
+		return ""
+	}
+	hdr : [6]u8
+	if _, e := os.read(f, hdr[:]); e != nil {
+		return ""
+	}
+	count := int(u16be(hdr[:], 2))
+	str_off := int(u16be(hdr[:], 4))
+	if count <= 0 || count > 256 {
+		return ""
+	}
+	recs := make([]byte, count * 12)
+	defer delete(recs)
+	if _, e := os.read(f, recs); e != nil {
+		return ""
+	}
+	best_enc := 99
+	best_nid := 99
+	best_off, best_len := 0, 0
+	for i in 0 ..< count {
+		rec := i * 12
+		pid := int(u16be(recs, rec))
+		nid := int(u16be(recs, rec + 6))
+		if nid != 1 && nid != 16 {
+			continue
+		}
+		enc := 99
+		switch pid {
+		case 0, 3:
+			enc = 0 // UTF-16BE 优先
+		case 1:
+			enc = 1
+		}
+		// typographic family(16,可能是全称)优先于 family(1,常被 NerdFonts 缩写成 "X NF")
+		if enc < best_enc || (enc == best_enc && nid == 16 && best_nid != 16) {
+			best_enc = enc
+			best_nid = nid
+			best_off = int(u16be(recs, rec + 10))
+			best_len = int(u16be(recs, rec + 8))
+		}
+	}
+	if best_enc == 99 {
+		return ""
+	}
+	// 读目标字符串(相对 name 表)
+	abs := i64(name_off + str_off + best_off)
+	if _, e := os.seek(f, abs, io.Seek_From.Start); e != nil {
+		return ""
+	}
+	s := make([]byte, best_len)
+	defer delete(s)
+	if _, e := os.read(f, s); e != nil {
+		return ""
+	}
+	if best_enc == 1 {
+		// Latin:逐字节(>=0x80 的按 Latin-1 近似)
+		out : [dynamic]byte
+		defer delete(out)
+		for b in s {
+			if b == 0 {
+				break
+			}
+			append(&out, b)
+		}
+		return strings.clone(string(out[:]))
+	}
+	// UTF-16BE
+	out : [dynamic]byte
+	defer delete(out)
+	for i := 0; i + 1 < len(s); i += 2 {
+		u := u16(s[i]) << 8 | u16(s[i + 1])
+		if u == 0 {
+			break
+		}
+		if u < 0x80 {
+			append(&out, byte(u))
+		} else if u < 0x800 {
+			append(&out, 0xC0 | u8(u >> 6), 0x80 | u8(u & 0x3F))
+		} else {
+			append(&out, 0xE0 | u8(u >> 12), 0x80 | u8(u >> 6 & 0x3F), 0x80 | u8(u & 0x3F))
+		}
+	}
+	return strings.clone(string(out[:]))
 }
 
 GetFont :: proc(h : mem.Handle) -> ^Font {
