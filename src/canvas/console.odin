@@ -1,15 +1,21 @@
-// 视口层数据:Console(行列/光标/活跃缓冲/vt 状态/布局几何)。
+// 窗格内容实体:Console(视口几何 + 会话 + 字体集 + VT 状态)。
+// 唯一拥有者 = leaf 树节点(TreeNode.console_id);节点销毁 → DestroyConsole(字体/会话/缓冲一并释放)。
+// 空窗格 = 节点无 console(懒创建:设字体或启动会话时经 ensureConsole 建)。
 // 生命周期 + 布局(居中取整/review 锚定换算/视口顶行公式)归本文件。
 package canvas
 
 import ct "../conpty"
+import fnt "../font"
 import mem "../memory"
 import "core:math"
+import "core:strings"
 
 // ---------------------------------------------------------------------------
 // Console
 // ---------------------------------------------------------------------------
-MAX_CONSOLE_SLOTS :: 32
+// 容量依据:一个 leaf 窗格恰持一个 console(含空窗格);64 = 单屏实际可用的分屏上限,
+// 主屏 + 交替屏各占一个 buffer 槽(见 buffer.odin 的 MAX_TERM_BUFFER_SLOTS)
+MAX_CONSOLE_SLOTS :: 64
 
 MAX_BUFFERS_PER_CONSOLE :: 8
 
@@ -25,9 +31,15 @@ Console :: struct {
 	term_buffer_count : u32,
 	active_term_buffer_id : mem.Handle, // 当前渲染/写入的页;0 = 未登记
 
-	conpty_handle : mem.Handle, // 绑定的 ConPTY
+	conpty_handle : mem.Handle, // 绑定的 ConPTY;0 = 无会话(空窗格/工具 console)
 
-	font_size : f32, // 创建时的目标字号
+	// 字体集(引用计数持有者 = 本结构):主字体 + Bold/Italic/BoldItalic 变体
+	// (变体 0 = 无此 face,渲染走合成兜底);font_input 留存原始输入名(字号重载/继承)
+	font_id : mem.Handle,
+	font_bold : mem.Handle,
+	font_italic : mem.Handle,
+	font_bold_italic : mem.Handle,
+	font_input : string,
 
 	input_activity_ms : u64, // 最近用户输入活动时刻(FeedConsole 唯一写点;
 	// render 用于"输入期间光标不闪烁"判定;0 = 从未输入)
@@ -35,42 +47,19 @@ Console :: struct {
 
 consoles : mem.GenArray(MAX_CONSOLE_SLOTS, Console)
 
-// 自动建主屏 TermBuffer;绑定 conpty_handle。
-// conpty = 0 = 工具 console(无会话:输入路径 WriteConptyInput 为空操作,轮询跳过)。
-CreateConsole :: proc(rows, cols : u16, conpty_handle : mem.Handle) -> (h : mem.Handle, ok : bool) {
+// 自动建主屏 TermBuffer;绑定 conpty_handle(0 = 工具/空窗格 console,无会话)。
+CreateConsole :: proc(rows, cols : u16, conpty_handle : mem.Handle = {}) -> (h : mem.Handle, ok : bool) {
 	if rows == 0 || cols == 0 {
 		return {}, false
 	}
 	if conpty_handle.id != 0 && ct.GetConptyContext(conpty_handle) == nil {
 		return {}, false
 	}
-	tb_h, tb_ok := CreateTermBuffer()
-	if !tb_ok {
-		return {}, false
-	}
-	console := Console {
-		rows = rows,
-		cols = cols,
-		pty_rows = rows, // 初始 = ConPTY 创建尺寸(80x24),与传入一致
-		pty_cols = cols,
-		conpty_handle = conpty_handle,
-	}
-	console.vt = VtState {
-		autowrap = true,
-		cursor_visible = true,
-		scroll_bottom = rows - 1,
-		style = { fg = DEFAULT_COLOR, bg = DEFAULT_COLOR },
-	}
-	h = mem.Alloc(&consoles, console)
+	h = mem.Alloc(&consoles, Console {})
 	if h.id == 0 {
-		DestroyTermBuffer(tb_h)
 		return {}, false
 	}
-	// 解析器回调绑定(user_data 存句柄供回调取回)
-	Init(&GetConsole(h).vt.parser, vtParserCallback)
-	GetConsole(h).vt.parser.user_data = packHandle(h)
-	if !ConsoleAttachTermBuffer(h, tb_h) {
-		DestroyTermBuffer(tb_h)
+	if !consoleInitSession(h, rows, cols, conpty_handle) {
 		mem.Free(&consoles, h)
 		return {}, false
 	}
@@ -81,19 +70,211 @@ GetConsole :: proc(h : mem.Handle) -> ^Console {
 	return mem.Get(&consoles, h)
 }
 
-// 销毁 console 本体:会话(读线程 + ConPTY)+ 视口。
-// 唯一拥有者 = 窗口(console_id);窗口销毁路径先调本函数再 DestroyWindowSlot。
+// 取 leaf 节点挂载的 console;空窗格/内部节点返回 nil
+NodeConsole :: proc(node_h : mem.Handle) -> ^Console {
+	return GetConsole(NodeConsoleId(node_h))
+}
+
+// 节点挂载的 console 句柄(0 = 空窗格/内部节点/节点不存在)
+NodeConsoleId :: proc(node_h : mem.Handle) -> mem.Handle {
+	node := GetWindowTreeNode(node_h)
+	if node == nil || !node.is_leaf {
+		return {}
+	}
+	return node.console_id
+}
+
+// 取节点挂载的 console;无则创建(conpty = 0,内容容器)并挂载(仅 leaf)
+ensureConsole :: proc(node_h : mem.Handle) -> ^Console {
+	if console := NodeConsole(node_h); console != nil {
+		return console
+	}
+	if NodeConsoleId(node_h).id != 0 {
+		return nil // 句柄存在但槽失效:不重复挂载(下次访问自愈)
+	}
+	node := GetWindowTreeNode(node_h)
+	if node == nil || !node.is_leaf {
+		return nil
+	}
+	console_h, ok := CreateConsole(24, 80, {})
+	if !ok {
+		return nil
+	}
+	if !TreeNodeSetConsole(node_h, console_h) {
+		DestroyConsole(console_h)
+		return nil
+	}
+	return GetConsole(console_h)
+}
+
+// 销毁 console 本体:字体集引用 + 会话(读线程 + ConPTY)+ 全部 buffer。
+// 唯一拥有者 = leaf 节点;节点销毁路径调本函数后摘除节点。
 DestroyConsole :: proc(h : mem.Handle) {
 	console := GetConsole(h)
 	if console == nil {
 		return
 	}
+	releaseConsoleFontSet(console)
 	ct.StopReadThread(console.conpty_handle) // 句柄无效 = no-op
 	ct.DestroyConpty(console.conpty_handle)
 	for i in 0 ..< int(console.term_buffer_count) {
 		DestroyTermBuffer(console.term_buffer_ids[i])
 	}
 	mem.Free(&consoles, h)
+}
+
+// 给已存在的 console 绑定会话(先设字体后 launch 的路径):重置内容 + 绑 conpty
+consoleStartSession :: proc(console_h : mem.Handle, conpty_handle : mem.Handle, rows, cols : u16) -> bool {
+	console := GetConsole(console_h)
+	if console == nil {
+		return false
+	}
+	if conpty_handle.id != 0 && ct.GetConptyContext(conpty_handle) == nil {
+		return false
+	}
+	ct.StopReadThread(console.conpty_handle)
+	ct.DestroyConpty(console.conpty_handle)
+	return consoleInitSession(console_h, rows, cols, conpty_handle)
+}
+
+// 清会话:销毁 conpty + 全部 buffer + 重置 VT 状态;保留 console 本体与字体
+consoleClearSession :: proc(console_h : mem.Handle) -> bool {
+	console := GetConsole(console_h)
+	if console == nil {
+		return false
+	}
+	ct.StopReadThread(console.conpty_handle)
+	ct.DestroyConpty(console.conpty_handle)
+	for i in 0 ..< int(console.term_buffer_count) {
+		DestroyTermBuffer(console.term_buffer_ids[i])
+	}
+	console.term_buffer_ids = {}
+	console.term_buffer_count = 0
+	console.active_term_buffer_id = {}
+	console.conpty_handle = {}
+	console.vt = VtState {}
+	console.cursor_row, console.cursor_col = 0, 0
+	return true
+}
+
+// 会话初始化(建 console 与复用 console 共用):重置视口/解析状态 + 建主屏 + 绑 conpty。
+// 失败时 console 处于"无 buffer"空态(调用方负责销毁或重试)。
+consoleInitSession :: proc(console_h : mem.Handle, rows, cols : u16, conpty_handle : mem.Handle) -> bool {
+	console := GetConsole(console_h)
+	if console == nil {
+		return false
+	}
+	tb_h, tb_ok := CreateTermBuffer()
+	if !tb_ok {
+		return false
+	}
+	console.rows = rows
+	console.cols = cols
+	console.pty_rows = rows // 初始 = ConPTY 创建尺寸(80x24),与传入一致
+	console.pty_cols = cols
+	console.cursor_row, console.cursor_col = 0, 0
+	console.conpty_handle = conpty_handle
+	console.term_buffer_ids = {}
+	console.term_buffer_count = 0
+	console.active_term_buffer_id = {}
+	console.vt = VtState {
+		autowrap = true,
+		cursor_visible = true,
+		scroll_bottom = rows - 1,
+		style = { fg = DEFAULT_COLOR, bg = DEFAULT_COLOR },
+	}
+	// 解析器回调绑定(user_data 存句柄供回调取回)
+	Init(&console.vt.parser, vtParserCallback)
+	console.vt.parser.user_data = packHandle(console_h)
+	if !ConsoleAttachTermBuffer(console_h, tb_h) {
+		DestroyTermBuffer(tb_h)
+		return false
+	}
+	return true
+}
+
+// ---------------------------------------------------------------------------
+// 字体集(引用计数;console 是唯一持有者)
+// ---------------------------------------------------------------------------
+// 释放字体引用集(主 + 3 变体;各自引用计数归零即可复用)+ 输入名
+releaseConsoleFontSet :: proc(console : ^Console) {
+	if console.font_id.id != 0 {
+		fnt.ReleaseFont(console.font_id)
+		console.font_id = {}
+	}
+	if console.font_bold.id != 0 {
+		fnt.ReleaseFont(console.font_bold)
+		console.font_bold = {}
+	}
+	if console.font_italic.id != 0 {
+		fnt.ReleaseFont(console.font_italic)
+		console.font_italic = {}
+	}
+	if console.font_bold_italic.id != 0 {
+		fnt.ReleaseFont(console.font_bold_italic)
+		console.font_bold_italic = {}
+	}
+	if console.font_input != "" {
+		delete(console.font_input)
+		console.font_input = ""
+	}
+}
+
+// 继承另一 console 的完整字体集(split 承载新会话;引用 ×4 + 输入名 clone)
+inheritConsoleFontSet :: proc(dst, src : ^Console) {
+	if src.font_id.id != 0 {
+		dst.font_id = src.font_id
+		fnt.RetainFont(src.font_id)
+	}
+	if src.font_bold.id != 0 {
+		dst.font_bold = src.font_bold
+		fnt.RetainFont(src.font_bold)
+	}
+	if src.font_italic.id != 0 {
+		dst.font_italic = src.font_italic
+		fnt.RetainFont(src.font_italic)
+	}
+	if src.font_bold_italic.id != 0 {
+		dst.font_bold_italic = src.font_bold_italic
+		fnt.RetainFont(src.font_bold_italic)
+	}
+	if src.font_input != "" {
+		dst.font_input = strings.clone(src.font_input)
+	}
+}
+
+// 渲染查询:style(bold/italic)→ 变体字体句柄 + 各维度"合成兜底"标志。
+// 变体存在 = 真 face(不再合成);不存在 = 主字体 + 渲染层按标志兜底
+// (bold_syn → 双描,italic_syn → 斜切)。
+ConsoleFontVariant :: proc(console_h : mem.Handle, bold, italic : bool) -> (fh : mem.Handle, bold_syn, italic_syn : bool) {
+	console := GetConsole(console_h)
+	if console == nil {
+		return {}, true, true
+	}
+	switch {
+	case bold && italic:
+		if console.font_bold_italic.id != 0 {
+			return console.font_bold_italic, false, false
+		}
+		if console.font_bold.id != 0 {
+			return console.font_bold, false, true
+		}
+		if console.font_italic.id != 0 {
+			return console.font_italic, true, false
+		}
+		return console.font_id, true, true
+	case bold:
+		if console.font_bold.id != 0 {
+			return console.font_bold, false, false
+		}
+		return console.font_id, true, false
+	case italic:
+		if console.font_italic.id != 0 {
+			return console.font_italic, false, false
+		}
+		return console.font_id, false, true
+	}
+	return console.font_id, false, false
 }
 
 // ---------------------------------------------------------------------------

@@ -42,15 +42,13 @@ Window(leaf 节点)= 一个 App = 一个 ConPTY 子进程
 
 | 文件 | 数据类型 | 职责 |
 |---|---|---|
-| `tree.odin` | `WindowTreeNode`/`Transform`/`SplitType`/`FocusDirection`/焦点状态 | 树结构操作(分裂/摘除/挂载/重算/焦点/命中)+ `ConsoleUpdateTree` 编排 |
-| `win.odin` | `Window` | 窗口表生命周期(Create/Get/DestroySlot/ensureWindow) |
-| `iterm.odin` | `Iterm`/`ToolType` | 工具浮层增删/锚定变换 |
-| `commandbar.odin` | `CommandBar` | 悬浮控制台:iterm 工具(`ToolType.CommandBar`)的编辑状态,**fat struct 内联**在窗口 iterms 条目(`using commandbar : CommandBar`),显隐 = 条目 `visible`,渲染按 iterm 锚定几何 |
+| `tree.odin` | `WindowTreeNode`/`Transform`/`SplitType`/`FocusDirection` | 树结构操作(分裂/摘除/挂载/重算/焦点/命中)+ `ConsoleUpdateTree` 编排;leaf 节点**直接持 `console_id`**(无 Window 中间层) |
+| `commandbar.odin` | `CommandBar` | 悬浮控制台(全局单例):输入缓冲 + 光标编辑状态 + 命令事件队列(`CommandEvent`);显隐 = `command_bar_visible` |
 | `buffer.odin` | `Cell`/`CellStyle`/`Line`/`TermBuffer` | 内容层生命周期 + **全部写路径**(落格/折行/滚动/擦除/裁剪)+ `review_line` 真值 |
-| `console.odin` | `Console` | 视口生命周期 + 布局(居中/`viewportTop`/review 锚定) |
+| `console.odin` | `Console` | 窗格内容实体:视口生命周期 + 布局(居中/`viewportTop`/review 锚定)+ **字体集**(主/粗/斜/粗斜 + 输入名,引用计数持有者)+ 会话(conpty/缓冲)+ `ensureConsole`/`ConsoleFontVariant` |
 | `vt.odin` | `VtState` | VT 语法语义分派(ESC/CSI/SGR/DEC 模式)+ 应答 |
-| `userapi.odin` | —(用户接口状态) | 窗口/会话/字体/焦点域用户接口函数族(id 省略 = 焦点)+ 默认启动配置(`DefaultLaunch`)+ 查询(`WindowCount`/`GetSplitFactor`/`GetWindowInfo`) |
-| `theme.odin` | `Theme`/`ThemeSpec` | 主题数据(fg/bg/cursor + 16 ANSI + UI 色:frame/focus_border/fps/**页签条 tab_\***);颜色引用编码归属(DEFAULT_COLOR/colorRgb/colorIndex/ResolveColor/ansi256ToRgb 固定公式);`THEME_SPECS` 名字表 + SetTheme/SetThemeByName/GetThemes/GetTheme |
+| `userapi.odin` | —(用户接口状态) | 窗格/会话/字体/焦点域用户接口函数族(id 省略 = 焦点)+ 默认启动配置(`DefaultLaunch`)+ 查询(`ConsoleCount`/`GetSplitFactor`/`GetConsoleInfo`) |
+| `theme.odin` | `Theme`/`NamedTheme`/`ThemeField` | 命名主题注册表(外部数据 `resource/themes.dterm`)+ `boot_theme` 启动兜底;颜色引用编码归属(DEFAULT_COLOR/colorRgb/colorIndex/ResolveColor/ansi256ToRgb);`THEME_FIELDS` 字段名表 + DefineTheme/SetThemeField/SetThemeByName/GetTheme/GetThemeSlot |
 | `page.odin` | `Page`/`PageMode` | 页数据:每页一棵窗口树(页持根句柄 + 页内焦点 + 显示模式);页签几何/命中(PageTabRect/TabBarHit);PageCreate/New/Destroy/Switch/Next/Prev + SetSingleMode/ToggleSingleMode |
 | `ui.odin` | —(UI 定制状态) | UI 字体定制(页签/状态栏/FPS 共用):SetUIFont/GetUIFont/ResetUIFont;默认 consola 18 |
 
@@ -58,9 +56,9 @@ Window(leaf 节点)= 一个 App = 一个 ConPTY 子进程
 
 | 文件 | 数据类型 | 职责 |
 |---|---|---|
-| `command/spec.odin` | `CommandSpec`/`ArgKind`/`CmdScope` | 命令规格表(`COMMAND_SPECS`):名字/别名/参数形态/相位/用法/帮助 —— 解析、校验、错误文本、格式化、help 全部表驱动 |
+| `command/spec.odin` | `CommandSpec`/`ArgKind` | 命令规格表(`COMMAND_SPECS`):名字/别名/参数形态/用法/帮助 —— 解析、校验、错误文本、格式化、help 全部表驱动 |
 | `command/command.odin` | `ParsedCommand`/`CommandStringKind`/`ToggleMode` | 解析(`ParseCommandStringEx`,带失败原因)+ 逆变换(`FormatCommand`)+ 唯一解释器(`ExecuteCommand`)+ 子命令槽表 |
-| `command/config.odin` | `ConfigStats` | 配置文件 = 命令脚本:两级路径(用户配置 → 保底配置)+ 两趟相位加载(`LoadConfig(.Global/.Window)`) |
+| `command/config.odin` | `ConfigStats` | 配置文件 = 命令脚本:入口(用户配置 → 保底配置)+ `load` 就地展开(相对路径按当前文件目录)+ 逐行顺序执行 |
 | `command/keybindings.odin` | `Binding`/`KeyMods`/`KeyBindings` | 快捷键绑定表(mods+key → 数据化命令)+ 每帧键消费(`ProcessKeys`)+ 表操作 userapi |
 | `command/execute.odin` | `CommandEvent`(canvas) | 命令栏事件队列消费(帧内路由):执行 → 结果/失败原因写回事件槽 |
 
@@ -75,7 +73,7 @@ Window(leaf 节点)= 一个 App = 一个 ConPTY 子进程
 // 决策:① CellStyle.fg/bg 用引用编码(主题热切换零缓冲污染)
 //      ② 256 色固定算法(主题只管 0-15 + 默认;覆盖表第二次出现再做)
 //      ③ frame_color 从树节点删除,分割条读主题(节点回到纯结构)
-//      ④ 主题归 canvas:SetTheme/ThemeGet userapi,切换即下一帧生效
+//      ④ 主题归 canvas:命名注册表 + theme/theme-set 指令,切换即下一帧生效
 Theme :: struct {
     fg, bg       : u32,      // 默认前景/背景(SGR 39/49/0 解析目标)
     cursor       : u32,      // 光标
@@ -92,13 +90,20 @@ Theme :: struct {
 // 解析器(SGR)只做语法 → 编码,零主题依赖;ansi256ToRgb 固定公式随编码一起驻 theme.odin。
 ```
 
+**命名主题注册表(外部数据段)**:`NamedTheme{name, theme}` 槽位数组(`MAX_THEME_SLOTS = 32`)+
+`current_theme_h`(当前激活槽)+ `boot_theme`(代码内唯一保留的启动兜底色,非可发布主题)。
+内置 8 套配色是**外部数据** `resource/themes.dterm`(每主题 30 行 `theme-set "name" <字段> <#RRGGBB>`),
+由入口配置 `load "themes.dterm"` 引入 —— 代码里不再有主题常量。
+写者:`SetThemeField(name, field, index, color)`(逐项,名字不存在即建槽)/ `SetThemeByName(name)`(激活)/
+`GetTheme()^` 直接改字段(程序化整表改)。**单一真相 = 注册表槽**,改活动主题的字段下一帧即生效。
+
 ### 4.1 窗口树节点
 
 ```odin
-// leaf 节点 = 一个 app:绑定 console;内部节点 = 纯分割容器
+// leaf 节点 = 一个窗格:直接持 console(字体集/会话/视口都在 console 里,无 Window 中间层)
+// 内部节点 = 纯分割容器(console_id = 0)
 WindowTreeNode :: struct {
-    console_id : mem.Handle,   // 仅 leaf:主应用 console;0 = 空窗
-    iterms : [dynamic]Iterm,   // 管理工具浮层(锚定于本节点几何)
+    console_id : mem.Handle,    // 仅 leaf:窗格 console;0 = 空窗格
     using transform : Transform, // position_x/y, width/height(像素)
     frame_width : u32,          // 分割条像素宽(颜色读主题 frame)
     parent_id : mem.Handle,     // 0 = 无父(仅根)
@@ -109,6 +114,9 @@ WindowTreeNode :: struct {
     is_leaf : bool,
 }
 ```
+
+- 窗格"存在"判定 = **有 console**(`NodeConsole != nil`):`CreateWindowTreeRoot`/`SplitNewWindow` 建窗格时即建 console(内容容器,字体/会话可选);
+- 关窗 = `DestroyConsole`(字体引用 + 会话 + 缓冲)+ `TreeNodeRemove`;无 auto_close 开关(会话结束即关窗,要保留窗格用 `clearc`)。
 
 ### 4.2 工具 iterm(锚定定位)
 
@@ -138,12 +146,16 @@ Console :: struct {
     vt : VtState,
     term_buffer_ids : [MAX_BUFFERS_PER_CONSOLE]mem.Handle,
     active_term_buffer_id : mem.Handle,
-    conpty_handle : mem.Handle,  // 0 = 无后端(工具 console,dterm 自己写内容)
-    font_size : f32,
+    conpty_handle : mem.Handle,  // 0 = 无会话(空窗格 / 工具 console)
+    font_id : mem.Handle,        // 字体集(引用计数持有者 = 本结构)
+    font_bold, font_italic, font_bold_italic : mem.Handle, // 变体(0 = 合成兜底)
+    font_input : string,         // 原始输入名(字号重载 / 继承)
+    input_activity_ms : u64,
 }
 ```
 
-字体唯一真相 = **Window.font_id**(渲染/布局/鼠标换算都经窗口取;Console 无字体副本)。
+字体唯一真相 = **Console.font_id**(渲染/布局/鼠标换算都经 console 取;树节点不存字体副本)。
+容量:`MAX_CONSOLE_SLOTS = 64`(一个 leaf 窗格恰持一个 console),`MAX_TERM_BUFFER_SLOTS = 128`(每 console 主屏 + 交替屏)。
 
 Cell 当前为文本单元(`cp: rune + style + wide`);rich content 未来经扩展 ANSI 序列进入,Cell 届时扩展为内容判别。
 
@@ -157,8 +169,8 @@ focused_iterm : i32        // -1 = 焦点在主应用;>=0 = iterms 下标
 ### 4.5 会话与字体(现状保留)
 
 - `ConptyContext`:hpc / 管道 / 进程信息 / Job Object(进程树跟踪 + KILL_ON_JOB_CLOSE 清理)。
-- `Font`:faces / GSUB / 图集 / shape 缓存。
-- `Theme`:canvas 数据(唯一写者;见 4.0),渲染层每帧 `ThemeGet` 只读消费。
+- `Font`:faces / GSUB / 图集 / shape 缓存;引用计数持有者 = 各窗格 `Console`。
+- `Theme`:canvas 数据(唯一写者;见 4.0),渲染层每帧 `GetTheme` 只读消费。
 
 ### 4.6 页(Page,每页一棵窗口树)
 
@@ -216,51 +228,53 @@ current_page : mem.Handle     // 当前页;0 = 无页(程序空态)
 - `@id` 放末尾指定目标窗口(缺省 = 当前焦点),仅窗口类命令接受;id 不在当前页树内 = 目标空(执行失败)
 - 方向:水平 `right|leftright|h`,垂直 `down|updown|v`;`left/up` = 新窗在首侧
 - 三态参数 `on|off`(缺省 = 翻转);布尔参数 `true|false|on|off|1|0`
-- 相位(`Global`/`Window`)是命令固有属性:配置文件据此分两趟执行
+- 配置文件**逐行顺序执行**(无相位):顺序由配置自己负责 —— 需要窗格的命令写在 `page-new` 之后;
+  `load "<path>"` 就地展开另一个命令文件(相对路径 = 相对当前文件所在目录)
 
-| 指令 | 参数 | 相位 | 说明 |
-|---|---|---|---|
-| `split` | `<right\|left\|up\|down> [factor] [@id]` | W | 分裂窗口(新窗成为焦点);factor = 原窗占比(默认 0.5) |
-| `focus` | `<id\|left\|right\|up\|down>` | W | 聚焦指定窗口(id 或方向导航) |
-| `destroy` / `close` | `[@id]` | W | 关闭窗口及其会话;唯一剩余窗口 = 清空整树 |
-| `factor` | `<ratio> [@id]` | W | 设置窗口**父节点** split_factor(0.05..0.95) |
-| `factorleaf` | `<n> <ratio>` | W | 设置先序叶子序号 n(1-based)认领的 split factor |
-| `exchange` | `<left\|right\|up\|down> [@id]` | W | 与方向邻居交换窗口内容(只换 window_id) |
-| `single` / `single-mode` | `[on\|off]` | W | 单窗显示模式(焦点窗独占树区;缺省 = 翻转) |
-| `count` / `windows` | - | W | 查询窗口数量 |
-| `info` | `[@id]` | W | 查询窗口信息(字体/会话/比例/自动关闭) |
-| `focus-get` / `getfocus` | - | W | 查询当前焦点窗口 id |
-| `font` | `"<path\|name>" <size> [@id]` | W | 设置窗口字体;单个数字参数 = 只改字号(等价 `fontsize`) |
-| `fontsize` | `<size> [@id]` | W | 改字号(保留字体) |
-| `fontsizeup` / `fontsizedown` | `[@id]` | W | 字号 ±2 |
-| `launch` | `"<cmd>" [@id]` | W | 用窗口已配置的字体启动 console 应用 |
-| `feed` | `"<text>" [@id]` | W | 向窗口会话写入输入 |
-| `autoclose` | `<true\|false> [@id]` | W | 应用退出后是否自动关窗(默认 true) |
-| `clearconsole` / `clearc` | `[@id]` | W | 清空窗口会话(保留窗口与字体) |
-| `scroll` | `<lines> [@id]` | W | 历史滚动:正 = 向下(新),负 = 向上(旧,进 review) |
-| `reviewup` / `reviewdown` | `[@id]` | W | 上/下翻一屏历史 |
-| `review-exit` / `exitreview` | `[@id]` | W | 退出 review 回实时跟随 |
-| `page-new` | `["<title>"]` | W | 新建页并切换(可选标题;根窗 + 默认启动) |
-| `page` | `<n>` | W | 切换页(n = 页存活序,1-based) |
-| `page-next` / `page-prev` | - | W | 相邻页环绕 |
-| `page-close` | `[n]` | W | 关页(缺省 = 当前页;最后一页拒绝) |
-| `page-title` / `title` | `"<title>" [n]` | W | 设置页标题(缺省 = 当前页) |
-| `pages` | - | W | 列出所有页(序号/标题/当前标记) |
-| `copy` / `paste` | - | W | 复制选区到剪贴板 / 粘贴到焦点窗口 |
-| `clearselection` / `deselect` | - | W | 清除文本选区 |
-| `selectall` | - | W | 全选焦点窗口缓冲 |
-| `theme` | `[name]` | G | 切换主题(缺省 = 列出全部主题) |
-| `uifont` | `"<path\|name>" <size>` | G | 设置 UI 字体(页签/状态栏/FPS 共用) |
-| `uifont-reset` / `uireset` | - | G | UI 字体回默认(consola 18) |
-| `borderless` / `toggle-borderless` | `[on\|off]` | G | 无边框窗口(缺省 = 翻转) |
-| `vsync` | `[on\|off]` | G | 垂直同步(缺省 = 翻转) |
-| `bgshader` / `bg` | `["<path>"]` | G | 背景 shader:缺省 = 重载默认文件,带路径 = 编译该文件 |
-| `toggle-commandbar` / `togglebar` | - | G | 悬浮控制台开关 |
-| `default-launch` / `startup` | `"<cmd>" ["<font>" <size>]` | G | 新建窗口的默认启动配置(cmd 空 = 不自动启动) |
-| `bind` | `<mods+key> "<命令>"` | G | 绑定键位(mods 前缀 alt/ctrl/shift/win 以 `+` 连键名) |
-| `unbind` | `<mods+key>` | G | 移除绑定(不存在 = 失败) |
-| `bindings` | - | G | 枚举全部绑定(**输出可再 bind**,走 `FormatCommand`) |
-| `help` / `?` | `[命令]` | G | 列出全部命令(带参数 = 单条用法) |
+| 指令 | 参数 | 说明 |
+|---|---|---|
+| `split` | `<right\|left\|up\|down> [factor] [@id]` | 分裂窗口(新窗成为焦点);factor = 原窗占比(默认 0.5) |
+| `focus` | `<id\|left\|right\|up\|down>` | 聚焦指定窗口(id 或方向导航) |
+| `destroy` / `close` | `[@id]` | 关闭窗口及其会话;唯一剩余窗口 = 清空整树 |
+| `factor` | `<ratio> [@id]` | 设置窗口**父节点** split_factor(0.05..0.95) |
+| `factorleaf` | `<n> <ratio>` | 设置先序叶子序号 n(1-based)认领的 split factor |
+| `exchange` | `<left\|right\|up\|down> [@id]` | 与方向邻居交换窗格内容(只换 console_id) |
+| `single` / `single-mode` | `[on\|off]` | 单窗显示模式(焦点窗独占树区;缺省 = 翻转) |
+| `count` / `windows` | - | 查询窗口数量 |
+| `info` | `[@id]` | 查询窗口信息(字体/会话/比例/自动关闭) |
+| `focus-get` / `getfocus` | - | 查询当前焦点窗口 id |
+| `font` | `"<path\|name>" <size> [@id]` | 设置窗口字体;单个数字参数 = 只改字号(等价 `fontsize`) |
+| `fontsize` | `<size> [@id]` | 改字号(保留字体) |
+| `fontsizeup` / `fontsizedown` | `[@id]` | 字号 ±2 |
+| `launch` | `"<cmd>" [@id]` | 用窗口已配置的字体启动 console 应用 |
+| `feed` | `"<text>" [@id]` | 向窗口会话写入输入 |
+| `clearconsole` / `clearc` | `[@id]` | 清空窗格会话(保留窗格与字体) |
+| `scroll` | `<lines> [@id]` | 历史滚动:正 = 向下(新),负 = 向上(旧,进 review) |
+| `reviewup` / `reviewdown` | `[@id]` | 上/下翻一屏历史 |
+| `review-exit` / `exitreview` | `[@id]` | 退出 review 回实时跟随 |
+| `page-new` | `["<title>"]` | 新建页并切换(可选标题;根窗 + 默认启动) |
+| `page` | `<n>` | 切换页(n = 页存活序,1-based) |
+| `page-next` / `page-prev` | - | 相邻页环绕 |
+| `page-close` | `[n]` | 关页(缺省 = 当前页;最后一页拒绝) |
+| `page-title` / `title` | `"<title>" [n]` | 设置页标题(缺省 = 当前页) |
+| `pages` | - | 列出所有页(序号/标题/当前标记) |
+| `copy` / `paste` | - | 复制选区到剪贴板 / 粘贴到焦点窗口 |
+| `clearselection` / `deselect` | - | 清除文本选区 |
+| `selectall` | - | 全选焦点窗口缓冲 |
+| `theme` | `[name]` | 激活命名主题(缺省 = 列出注册表全部名字,标出当前) |
+| `theme-set` / `tset` | `"<name>" <字段> <#RRGGBB>` | 设置命名主题字段(名字不存在则新建;fg/bg/cursor/ansi0-15/frame/focus_border/fps_\*/tab_\*/selection_\*) |
+| `uifont` | `"<path\|name>" <size>` | 设置 UI 字体(页签/状态栏/FPS 共用) |
+| `uifont-reset` / `uireset` | - | UI 字体回默认(consola 18) |
+| `borderless` / `toggle-borderless` | `[on\|off]` | 无边框窗口(缺省 = 翻转) |
+| `vsync` | `[on\|off]` | 垂直同步(缺省 = 翻转) |
+| `bgshader` / `bg` | `["<path>"]` | 背景 shader:缺省 = 重载默认文件,带路径 = 编译该文件 |
+| `toggle-commandbar` / `togglebar` | - | 悬浮控制台开关 |
+| `default-launch` / `startup` | `"<cmd>" ["<font>" <size>]` | 新建窗口的默认启动配置(cmd 空 = 不自动启动) |
+| `load` | `"<path>"` | 执行另一个命令文件(相对路径 = 相对当前文件所在目录;嵌套上限 8) |
+| `bind` | `<mods+key> "<命令>"` | 绑定键位(mods 前缀 alt/ctrl/shift/win 以 `+` 连键名) |
+| `unbind` | `<mods+key>` | 移除绑定(不存在 = 失败) |
+| `bindings` | - | 枚举全部绑定(**输出可再 bind**,走 `FormatCommand`) |
+| `help` / `?` | `[命令]` | 列出全部命令(带参数 = 单条用法) |
 
 **示例**:
 ```
@@ -278,7 +292,7 @@ scroll -10             # 历史向上翻 10 行(review)
 reviewup               # 上翻一屏
 launch "cmd.exe"       # 启动 cmd(需先设字体)
 destroy @3             # 关闭窗口 3
-autoclose false        # 应用退出后保留窗口
+autoclose 已取消:会话结束即关窗(要保留窗格用 clearc)
 theme monokai          # 切主题(theme 无参 = 列出)
 page-new "logs"        # 新建页并命名
 page-close 2           # 关第 2 页
@@ -289,12 +303,12 @@ bindings               # 枚举全部绑定(输出可再 bind)
 count                  # 窗口数量
 ```
 
-**实现:** `src/command/` —— `spec.odin`(`COMMAND_SPECS` 表:名字/别名/参数形态/相位/用法/帮助)、
+**实现:** `src/command/` —— `spec.odin`(`COMMAND_SPECS` 表:名字/别名/参数形态/用法/帮助)、
 `command.odin`(`ParseCommandStringEx` 解析 + `FormatCommand` 逆变换 + `ExecuteCommand` 唯一解释器)、
 `config.odin`(配置文件两趟加载)、`keybindings.odin`(绑定表)、`execute.odin`(命令栏事件消费)。
 新命令 = 规格表加一行 + 解释器加一个分支(解析/校验/错误文本/格式化/help 自动跟随)。
 
-### 5.0b 用户接口(函数族,window.odin)
+### 5.0b 用户接口(函数族)
 
 控制台指令最终映射到这些函数(用户代码/未来 DLL 也可直接调用):
 
@@ -306,24 +320,23 @@ count                  # 窗口数量
 | `SetSplitFactor` | `(factor : f32, id = {}) -> bool` | 设父节点比例 |
 | `SetSplitFactorLeaf` | `(n : int, factor : f32) -> bool` | 设先序叶子序号 n(1-based)认领的 split 比例 |
 | `GetSplitFactor` | `(id = {}) -> (f32, bool)` | 查询父节点比例(根窗 = false) |
-| `ExchangeWindow` | `(dir : FocusDirection, id = {}) -> bool` | 与方向邻居交换 window_id |
-| `SetWindowFont` | `(path : string, size : f32, id = {}) -> bool` | 设窗口字体(无窗则自动创建) |
-| `SetWindowFontSize` | `(size : f32, id = {}) -> bool` | 改字号(保留字体文件;失败保留旧字体) |
-| `AdjustFontSize` | `(delta : f32, id = {}) -> bool` | 字号增量(绑定目标;命令层用 ±2) |
-| `SetDefaultLaunch` | `(cmd, font : string, size : f32)` | 默认启动配置:之后新建窗口自动先设字体再启动;留空 = 不自动应用。已有窗口不追溯 |
+| `ExchangeWindow` | `(dir : FocusDirection, id = {}) -> bool` | 与方向邻居交换 console_id |
+| `SetConsoleFont` | `(path : string, size : f32, id = {}) -> bool` | 设窗格字体(空窗格自动建 console) |
+| `SetConsoleFontSize` | `(size : f32, id = {}) -> bool` | 改字号(保留字体文件;失败保留旧字体) |
+| `AdjustConsoleFontSize` | `(delta : f32, id = {}) -> bool` | 字号增量(绑定目标;命令层用 ±2) |
+| `SetDefaultLaunch` | `(cmd, font : string, size : f32)` | 默认启动配置:之后新建窗格自动先设字体再启动;留空 = 不自动应用。已有窗格不追溯 |
 | `GetDefaultLaunch` | `() -> ^DefaultLaunch` | 默认启动配置指针(字段直读写) |
-| `LaunchConsole` | `(cmd : string, id = {}) -> bool` | 用窗口字体启动会话;默认 auto_close=true |
-| `FeedConsole` | `(data : []byte, id = {}) -> bool` | 写输入到窗口 console(同时退出 review) |
-| `ClearWindowConsole` | `(id = {}) -> bool` | 清窗口会话(保留窗口/字体) |
-| `SetAutoClose` | `(b : bool, id = {}) -> bool` | 设置自动关闭 |
-| `PollSessions` | `() -> bool` | 每帧检测会话结束,按 auto_close 处理;返回是否有存活窗口 |
+| `LaunchConsole` | `(cmd : string, id = {}) -> bool` | 用窗格字体启动会话(已绑会话则自动分屏继承字体) |
+| `FeedConsole` | `(data : []byte, id = {}) -> bool` | 写输入到窗格 console(同时退出 review) |
+| `ClearConsoleSession` | `(id = {}) -> bool` | 清窗格会话(保留 console 与字体) |
+| `PollSessions` | `() -> bool` | 每帧检测会话结束 → 关窗格;返回是否还有窗格 |
 | `ConsoleScroll` | `(delta : int, id = {}) -> bool` | 历史滚动:正=向下(新),负=向上(旧,进 review) |
 | `ConsoleExitReview` | `(id = {}) -> bool` | 退出 review 回实时跟随(内部单点 `exitReview`) |
 | `SetFocusWindow` | `(id : mem.Handle) -> bool` | 设焦点 |
 | `FocusMove` | `(dir : FocusDirection, id = {}) -> bool` | 方向导航设焦点 |
 | `GetFocusWindow` | `() -> mem.Handle` | 查询焦点 |
-| `WindowCount` | `() -> int` | 查询窗口数 |
-| `GetWindowInfo` | `(id = {}) -> (WindowInfo, bool)` | 窗口信息快照(派生量按值返回;font_name 借用) |
+| `ConsoleCount` | `() -> int` | 查询当前页窗格数 |
+| `GetConsoleInfo` | `(id = {}) -> (ConsoleInfo, bool)` | 窗格信息快照(派生量按值返回;空窗格 has_console=false) |
 | `PageCreate` | `() -> mem.Handle` | 建页(页槽 + 根空叶);不变为当前页 |
 | `PageNew` | `() -> mem.Handle` | 建页 + 根窗(默认启动配置)+ 切换 |
 | `PageDestroy` | `(h) -> bool` | 关页(整树销毁);最后一页拒绝;当前页销毁 → 切相邻 |
@@ -336,14 +349,14 @@ count                  # 窗口数量
 | `SetUIFont` | `(path : string, size : f32) -> bool` | 设置 UI 字体(页签/状态栏/FPS 共用;失败保留旧) |
 | `GetUIFont` | `() -> mem.Handle` | 取 UI 字体(未设置惰性加载默认 consola 18) |
 | `ResetUIFont` | `()` | 回默认(consola 18) |
-| `SetTheme` / `SetThemeByName` | `(t : Theme / name : string) -> bool` | 切换主题(按名字大小写不敏感;下一帧全量生效) |
+| `SetThemeByName` | `(name : string) -> bool` | 激活命名主题(不存在 = false;下一帧全量生效) |
 | `GetTheme` | `() -> ^Theme` | 当前主题指针(只读消费/字段直改) |
-| `GetThemes` | `() -> []ThemeSpec` | 内置主题表(名字 + Theme;`theme` 无参列出) |
+| `DefineTheme` / `SetThemeField` / `GetThemeSlot` | `(name[, field, index, color])` | 命名主题注册表(建槽/逐项设置/按名取槽) |
 | `SetKeyBinding` | `(key : inp.Scancode, mods : KeyMods, cmd : ParsedCommand) -> bool` | 添加/覆盖一条绑定(同 key+mods 覆盖;表满 64 false) |
 | `ClearKeyBindings` | `()` | 清空绑定表 |
 | `UnsetKeyBinding` | `(key, mods) -> bool` | 移除一条绑定(不存在 = false) |
 | `GetKeyBinding` | `(key, mods) -> ^Binding` | 查表内槽指针(nil = 无;不做值拷贝) |
-| `LoadConfig` | `(phase : CmdScope) -> ConfigStats` | 配置文件按相位执行(见 6.3) |
+| `LoadConfig` | `() -> ConfigStats` | 执行入口配置(逐行顺序 + load 展开;见 6.3) |
 | `GetVSync` / `SetVSync` | `() -> bool` / `(on : bool)` | 垂直同步状态与开关(render) |
 | `GetWindowBorderless` / `SetWindowBorderless` | `() -> bool` / `(on : bool)` | 无边框窗口(render) |
 | `SetBackgroundShader` / `SetBackgroundShaderFile` / `ResetBackgroundShader` | `(...) -> bool` | 背景 shader 源码/文件/重载默认(render) |
@@ -462,12 +475,14 @@ ResetBackgroundShader() -> bool              // 重读默认文件(热重载)
 
 ### 6.3 配置分层(已实现:`config.dterm` = 命令脚本)
 
-- **用户配置** `%APPDATA%\dterm\config.dterm`:存在且可读 → 只执行它(完全替代保底配置)。
+- **用户配置** `%APPDATA%\Local\dterm\config.dterm`:存在且可读 → 只执行它(完全替代保底配置)。
 - **保底配置** `<工作目录>\resource\config.dterm`:用户配置缺失/读失败时执行(随源码提交 = 出厂默认)。
 - 语法 = 一行一条指令(与命令栏共用 `ParseCommandStringEx` + `ExecuteCommand`);行首 `#` / `//` 为注释;
   某行失败 → stderr 报 `路径:行号 + 原因` 并继续执行后续行(不整体回退)。
-- 加载两趟:`LoadConfig(.Global)` → 建第一页 → `LoadConfig(.Window)`。相位来自命令规格表的 `CmdScope`:
-  全局命令(主题/UI 字体/键位/装饰/默认启动/背景 shader)必须在建根窗前生效,窗口与页命令在其后按序执行。
+- **执行模型 = 逐行顺序执行(无相位)**:顺序由配置自己负责 —— 需要窗格的命令(split/font/launch/page-*)
+  写在 `page-new` 之后;main 只在配置未建页时保底建第一页。
+- **分片 = `load "<path>"`**:就地展开另一个命令文件;相对路径按**当前文件所在目录**解析,嵌套上限 8。
+  主题库 `resource/themes.dterm`(内置 8 套配色)即由入口配置首行 `load "themes.dterm"` 引入。
 - 配置里可写多页启动布局(`page-new "dev"` / `split right` / `launch "bash"` …)。
 - **行为配置**(Odin 代码 / DLL,编译):自定义初始化流程、特殊布局逻辑。
 

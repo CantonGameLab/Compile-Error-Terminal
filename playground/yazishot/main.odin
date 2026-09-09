@@ -62,7 +62,7 @@ main :: proc() {
 		fmt.eprintln("page failed")
 		return
 	}
-	if !cv.SetWindowFont("Consolas", 26) {
+	if !cv.SetConsoleFont("Consolas", 26) {
 		fmt.eprintln("font failed")
 		return
 	}
@@ -79,8 +79,7 @@ main :: proc() {
 	}
 	_ = ct.StartReadThread(ctx) // 读线程向环形缓冲 push(app 的 LaunchConsole 同样路径)
 	ch, _ := cv.CreateConsole(40, 120, ctx)
-	win := cv.NodeWindow(cv.WindowTreeRoot())
-	win.console_id = ch
+	cv.TreeNodeSetConsole(cv.WindowTreeRoot(), ch)
 	cv.ConsoleUpdateTree(cv.WindowTreeRoot())
 
 	// 帧循环:拉环形缓冲 → 解析(含图形 APC,日志经 define 开启);约 10s

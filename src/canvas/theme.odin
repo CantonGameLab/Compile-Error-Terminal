@@ -1,9 +1,12 @@
-// 主题数据:终端默认色 + 16 ANSI 色 + UI 色(唯一实例 current_theme,canvas 唯一写者)。
+// 主题数据:命名主题注册表(NamedTheme 槽位数组)+ 当前激活主题 + 字段级配置。
+// 主题内容(内置 8 套配色)是**外部数据**(resource/themes.dterm,经配置 load 引入);
+// 代码内只保留 boot_theme(启动兜底:配置未激活任何主题时的显示)。
 // CellStyle.fg/bg 存颜色**引用编码**(见下),渲染期 ResolveColor 解码 →
 // 主题切换零缓冲污染(解析器零主题依赖),256 色固定公式(16-231 cube/232-255 灰度)。
 // 参考:alacritty(269 索引表)/ WT(扁平配色方案)/ kitty(color0-255 + 边框色独立)。
 package canvas
 
+import mem "../memory"
 import "core:strings"
 
 // 颜色引用编码(u32,CellStyle.fg/bg):
@@ -31,10 +34,10 @@ ResolveColor :: proc(c : u32, default : u32) -> u32 {
 	return default
 }
 
-// 256 索引 → RGB:0-15 取主题 ansi;16-231 cube;232-255 灰度(标准公式)
+// 256 索引 → RGB:0-15 取当前主题 ansi;16-231 cube;232-255 灰度(标准公式)
 ansi256ToRgb :: proc(n : int) -> u32 {
 	if n < 16 {
-		return current_theme.ansi[n]
+		return GetTheme().ansi[n]
 	}
 	if n < 232 {
 		n := n - 16
@@ -69,10 +72,28 @@ Theme :: struct {
 	selection_bg, selection_fg : u32, // 文本选区底色/字形色(选区高亮)
 }
 
-// 默认主题(现行配色)
-DEFAULT_THEME := Theme {
-	fg = 0xDCDCDC,
-	bg = 0x1E1E1E,
+// ---------------------------------------------------------------------------
+// 命名主题注册表(外部数据段:resource/themes.dterm 经配置 load 写入)
+// ---------------------------------------------------------------------------
+MAX_THEME_SLOTS :: 32
+
+MAX_THEME_NAME :: 31 // 名字定长截断(同页标题做法)
+
+NamedTheme :: struct {
+	name : [32]u8,
+	name_len : u8,
+	theme : Theme,
+}
+
+themes : mem.GenArray(MAX_THEME_SLOTS, NamedTheme)
+
+current_theme_h : mem.Handle // 当前激活主题槽;0 = 未激活(GetTheme 返回 boot_theme)
+
+// 代码内唯一保留的配色:启动兜底(配置未激活任何主题时的显示)。
+// 它不是可发布主题 —— 真实配色全部在外部数据里(resource/themes.dterm)。
+boot_theme := Theme {
+	fg = 0xD0D0D0,
+	bg = 0x101014,
 	cursor = 0xFFFFFF,
 	ansi = {
 		0x000000, 0x800000, 0x008000, 0x808000,
@@ -80,234 +101,205 @@ DEFAULT_THEME := Theme {
 		0x808080, 0xFF0000, 0x00FF00, 0xFFFF00,
 		0x0000FF, 0xFF00FF, 0x00FFFF, 0xFFFFFF,
 	},
-	frame = 0xFFFF00,
-	focus_border = 0x4FC3F7,
-	fps_bg = 0x101418,
-	fps_fg = 0x9FBFD8,
-	tab_bar_bg = 0x16161C,
-	tab_fg = 0x8A8F98,
-	tab_active_bg = 0x1E1E1E, // = bg(WT 式背景延伸)
-	tab_active_fg = 0xEAEAEA,
-	tab_hover_bg = 0x26262E,
-	selection_bg = 0x264F78,
+	frame = 0x404048,
+	focus_border = 0x729FCF,
+	fps_bg = 0x0A0A0C,
+	fps_fg = 0x808080,
+	tab_bar_bg = 0x0A0A0C,
+	tab_fg = 0x808080,
+	tab_active_bg = 0x101014,
+	tab_active_fg = 0xD0D0D0,
+	tab_hover_bg = 0x202028,
+	selection_bg = 0x404048,
 	selection_fg = 0xFFFFFF,
 }
 
-current_theme : Theme = DEFAULT_THEME
-
-// Dracula 主题(官方配色):bg #282A36 / fg #F8F8F2,accent 紫 #BD93F9,
-// 分割条用 selection 灰紫 #44475A(低调)
-DRACULA_THEME := Theme {
-	fg = 0xF8F8F2,
-	bg = 0x282A36,
-	cursor = 0xF8F8F2,
-	ansi = {
-		0x21222C, 0xFF5555, 0x50FA7B, 0xF1FA8C,
-		0xBD93F9, 0xFF79C6, 0x8BE9FD, 0xF8F8F2,
-		0x6272A4, 0xFF6E6E, 0x69FF94, 0xFFFFA5,
-		0xD6ACFF, 0xFF92DF, 0xA4FFFF, 0xFFFFFF,
-	},
-	frame = 0x44475A,
-	focus_border = 0xBD93F9,
-	fps_bg = 0x21222C,
-	fps_fg = 0x6272A4,
-	tab_bar_bg = 0x21222C,
-	tab_fg = 0x6272A4,
-	tab_active_bg = 0x282A36, // 激活页签 = 主题 bg(背景延伸)
-	tab_active_fg = 0xF8F8F2,
-	tab_hover_bg = 0x383A4E,
-	selection_bg = 0x44475A,
-	selection_fg = 0xF8F8F2,
+// 按名取主题槽(nil = 未定义;名字大小写不敏感)
+GetThemeSlot :: proc(name : string) -> ^NamedTheme {
+	for i in 0 ..< MAX_THEME_SLOTS {
+		slot := mem.GetIndex(&themes, i)
+		if slot == nil {
+			continue
+		}
+		if strings.equal_fold(string(slot.name[:slot.name_len]), name) {
+			return slot
+		}
+	}
+	return nil
 }
 
-// Nord 主题(Arctic Night):bg #2E3440 极夜 / fg #D8DEE9 雪;accent = frost 青 #88C0D0
-NORD_THEME := Theme {
-	fg = 0xD8DEE9,
-	bg = 0x2E3440,
-	cursor = 0xD8DEE9,
-	ansi = {
-		0x3B4252, 0xBF616A, 0xA3BE8C, 0xEBCB8B,
-		0x81A1C1, 0xB48EAD, 0x88C0D0, 0xE5E9F0,
-		0x4C566A, 0xBF616A, 0xA3BE8C, 0xEBCB8B,
-		0x81A1C1, 0xB48EAD, 0x88C0D0, 0xECEFF4,
-	},
-	frame = 0x4C566A,
-	focus_border = 0x88C0D0,
-	fps_bg = 0x272C33,
-	fps_fg = 0x616E88,
-	tab_bar_bg = 0x272C33,
-	tab_fg = 0x616E88,
-	tab_active_bg = 0x2E3440,
-	tab_active_fg = 0xD8DEE9,
-	tab_hover_bg = 0x3B4252,
-	selection_bg = 0x4C566A,
-	selection_fg = 0xD8DEE9,
+// userapi:建/取命名主题(存在 = 取;不存在 = 建,初值 = boot_theme)。
+// 配置文件里 theme-set "<name>" … 首次出现即建槽。
+DefineTheme :: proc(name : string) -> ^NamedTheme {
+	if len(name) == 0 {
+		return nil
+	}
+	if slot := GetThemeSlot(name); slot != nil {
+		return slot
+	}
+	slot := NamedTheme { theme = boot_theme }
+	n := min(len(name), MAX_THEME_NAME)
+	copy(slot.name[:n], name)
+	slot.name_len = u8(n)
+	h := mem.Alloc(&themes, slot)
+	if h.id == 0 {
+		return nil
+	}
+	return mem.Get(&themes, h)
 }
 
-// Solarized Dark(Ethan Schoonover):bg #002B36 / fg #839496;accent = 蓝 #268BD2
-SOLARIZED_DARK_THEME := Theme {
-	fg = 0x839496,
-	bg = 0x002B36,
-	cursor = 0x93A1A1,
-	ansi = {
-		0x073642, 0xDC322F, 0x859900, 0xB58900,
-		0x268BD2, 0xD33682, 0x2AA198, 0xEEE8D5,
-		0x002B36, 0xCB4B16, 0x859900, 0xB58900,
-		0x268BD2, 0xD33682, 0x2AA198, 0xFDF6E3,
-	},
-	frame = 0x586E75,
-	focus_border = 0x268BD2,
-	fps_bg = 0x00212B,
-	fps_fg = 0x586E75,
-	tab_bar_bg = 0x00212B,
-	tab_fg = 0x586E75,
-	tab_active_bg = 0x002B36,
-	tab_active_fg = 0x839496,
-	tab_hover_bg = 0x073642,
-	selection_bg = 0x073642,
-	selection_fg = 0xEEE8D5,
-}
-
-// Gruvbox Dark(morhetz):bg #282828 / fg #EBDBB2;accent = 蓝 #83A598
-GRUVBOX_DARK_THEME := Theme {
-	fg = 0xEBDBB2,
-	bg = 0x282828,
-	cursor = 0xEBDBB2,
-	ansi = {
-		0x282828, 0xCC241D, 0x98971A, 0xD79921,
-		0x458588, 0xB16286, 0x689D6A, 0xA89984,
-		0x928374, 0xFB4934, 0xB8BB26, 0xFABD2F,
-		0x83A598, 0xD3869B, 0x8EC07C, 0xEBDBB2,
-	},
-	frame = 0x504945,
-	focus_border = 0x83A598,
-	fps_bg = 0x1D2021,
-	fps_fg = 0x928374,
-	tab_bar_bg = 0x1D2021,
-	tab_fg = 0x928374,
-	tab_active_bg = 0x282828,
-	tab_active_fg = 0xEBDBB2,
-	tab_hover_bg = 0x3C3836,
-	selection_bg = 0x504945,
-	selection_fg = 0xEBDBB2,
-}
-
-// Monokai:bg #272822 / fg #F8F8F2;accent = 青 #66D9EF
-MONOKAI_THEME := Theme {
-	fg = 0xF8F8F2,
-	bg = 0x272822,
-	cursor = 0xF8F8F2,
-	ansi = {
-		0x272822, 0xF92672, 0xA6E22E, 0xE6DB74,
-		0x66D9EF, 0xAE81FF, 0xA1EFE4, 0xF8F8F2,
-		0x75715E, 0xF92672, 0xA6E22E, 0xE6DB74,
-		0x66D9EF, 0xAE81FF, 0xA1EFE4, 0xF8F8F2,
-	},
-	frame = 0x49483E,
-	focus_border = 0x66D9EF,
-	fps_bg = 0x1E1F1C,
-	fps_fg = 0x75715E,
-	tab_bar_bg = 0x1E1F1C,
-	tab_fg = 0x75715E,
-	tab_active_bg = 0x272822,
-	tab_active_fg = 0xF8F8F2,
-	tab_hover_bg = 0x3D3E37,
-	selection_bg = 0x49483E,
-	selection_fg = 0xF8F8F2,
-}
-
-// One Dark(Atom):bg #282C34 / fg #ABB2BF;accent = 蓝 #61AFEF
-ONE_DARK_THEME := Theme {
-	fg = 0xABB2BF,
-	bg = 0x282C34,
-	cursor = 0x528BFF,
-	ansi = {
-		0x282C34, 0xE06C75, 0x98C379, 0xE5C07B,
-		0x61AFEF, 0xC678DD, 0x56B6C2, 0xABB2BF,
-		0x5C6370, 0xE06C75, 0x98C379, 0xE5C07B,
-		0x61AFEF, 0xC678DD, 0x56B6C2, 0xD7DAE0,
-	},
-	frame = 0x3E4451,
-	focus_border = 0x61AFEF,
-	fps_bg = 0x21252B,
-	fps_fg = 0x5C6370,
-	tab_bar_bg = 0x21252B,
-	tab_fg = 0x5C6370,
-	tab_active_bg = 0x282C34,
-	tab_active_fg = 0xABB2BF,
-	tab_hover_bg = 0x3E4451,
-	selection_bg = 0x3E4451,
-	selection_fg = 0xABB2BF,
-}
-
-// Tango Dark(Windows Terminal 官方 scheme,TerminalSettingsModel/defaults.json):
-// bg #000000 / fg #D3D7CF(即 white);accent = brightBlue #729FCF;
-// 分割条/选区 = 暗灰 #555753(低调,同 Dracula/Nord 的"selection 灰"做法)
-TANGO_DARK_THEME := Theme {
-	fg = 0xD3D7CF,
-	bg = 0x000000,
-	cursor = 0xFFFFFF,
-	ansi = {
-		0x000000, 0xCC0000, 0x4E9A06, 0xC4A000,
-		0x3465A4, 0x75507B, 0x06989A, 0xD3D7CF,
-		0x555753, 0xEF2929, 0x8AE234, 0xFCE94F,
-		0x729FCF, 0xAD7FA8, 0x34E2E2, 0xEEEEEC,
-	},
-	frame = 0x555753,
-	focus_border = 0x729FCF,
-	fps_bg = 0x0A0A0C,
-	fps_fg = 0x555753,
-	tab_bar_bg = 0x0A0A0C,
-	tab_fg = 0x555753,
-	tab_active_bg = 0x000000, // = bg(WT 式背景延伸)
-	tab_active_fg = 0xD3D7CF,
-	tab_hover_bg = 0x1E1E1E,
-	selection_bg = 0x555753,
-	selection_fg = 0xD3D7CF,
-}
-
-// ---------------------------------------------------------------------------
-// 主题表(名字 → Theme):配置文件/命令栏按名字切换,缺省列出
-// ---------------------------------------------------------------------------
-ThemeSpec :: struct {
-	name : string, // 命令参数名(theme monokai)
-	theme : Theme,
-}
-
-// 内置主题(顺序 = 列出顺序;值引用上面的命名常量,单一真相源在常量)
-THEME_SPECS := [?]ThemeSpec {
-	{ name = "default", theme = DEFAULT_THEME },
-	{ name = "dracula", theme = DRACULA_THEME },
-	{ name = "nord", theme = NORD_THEME },
-	{ name = "solarized-dark", theme = SOLARIZED_DARK_THEME },
-	{ name = "gruvbox-dark", theme = GRUVBOX_DARK_THEME },
-	{ name = "monokai", theme = MONOKAI_THEME },
-	{ name = "one-dark", theme = ONE_DARK_THEME },
-	{ name = "tango-dark", theme = TANGO_DARK_THEME },
-}
-
-// 主题表(只读遍历:命令 theme 无参列出)
-GetThemes :: proc() -> []ThemeSpec {
-	return THEME_SPECS[:]
-}
-
-// userapi:按名字切换(大小写不敏感;未知名字 = false,保留旧主题)
+// userapi:激活命名主题(不存在 = false;下一帧渲染全量按新表解码,缓冲零重写)
 SetThemeByName :: proc(name : string) -> bool {
-	for i in 0 ..< len(THEME_SPECS) {
-		if strings.equal_fold(THEME_SPECS[i].name, name) {
-			SetTheme(THEME_SPECS[i].theme)
+	for i in 0 ..< MAX_THEME_SLOTS {
+		slot := mem.GetIndex(&themes, i)
+		if slot == nil {
+			continue
+		}
+		if strings.equal_fold(string(slot.name[:slot.name_len]), name) {
+			current_theme_h = mem.GetHandle(&themes, i)
 			return true
 		}
 	}
 	return false
 }
 
-// userapi:整表替换(配置入口/命令 theme);下一帧渲染全部按新表解码(缓冲零重写)
-SetTheme :: proc(t : Theme) {
-	current_theme = t
+// userapi:当前主题指针(渲染/布局唯一读入口;未激活 = boot_theme 指针)。
+// 直接改字段 = 改当前主题(规范 3.2:纯读取/纯赋值经指针直改)。
+GetTheme :: proc() -> ^Theme {
+	if slot := mem.Get(&themes, current_theme_h); slot != nil {
+		return &slot.theme
+	}
+	return &boot_theme
 }
 
-// 主题数据指针:只读消费(渲染)/字段级修改都直接操作数据结构本身
-GetTheme :: proc() -> ^Theme {
-	return &current_theme
+// 注册表指针(命令 theme 无参列出:Alive/GetIndex 枚举,不直索引)
+GetThemes :: proc() -> ^mem.GenArray(MAX_THEME_SLOTS, NamedTheme) {
+	return &themes
+}
+
+// ---------------------------------------------------------------------------
+// 字段级配置(命令 theme-set / 配置文件逐项覆盖)
+// ---------------------------------------------------------------------------
+// 字段判别(ansi 用 index 0..15;其余字段 index 恒 0)
+ThemeField :: enum u8 {
+	Fg,
+	Bg,
+	Cursor,
+	Ansi,
+	Frame,
+	FocusBorder,
+	FpsBg,
+	FpsFg,
+	TabBarBg,
+	TabFg,
+	TabActiveBg,
+	TabActiveFg,
+	TabHoverBg,
+	SelectionBg,
+	SelectionFg,
+}
+
+// 字段名表:name = Theme 结构体字段名(零映射;改字段名 = 改表)
+ThemeFieldSpec :: struct {
+	name : string,
+	field : ThemeField,
+	index : u8, // 仅 .Ansi 用
+}
+
+THEME_FIELDS := [?]ThemeFieldSpec {
+	{ name = "fg", field = .Fg },
+	{ name = "bg", field = .Bg },
+	{ name = "cursor", field = .Cursor },
+	{ name = "ansi0", field = .Ansi, index = 0 },
+	{ name = "ansi1", field = .Ansi, index = 1 },
+	{ name = "ansi2", field = .Ansi, index = 2 },
+	{ name = "ansi3", field = .Ansi, index = 3 },
+	{ name = "ansi4", field = .Ansi, index = 4 },
+	{ name = "ansi5", field = .Ansi, index = 5 },
+	{ name = "ansi6", field = .Ansi, index = 6 },
+	{ name = "ansi7", field = .Ansi, index = 7 },
+	{ name = "ansi8", field = .Ansi, index = 8 },
+	{ name = "ansi9", field = .Ansi, index = 9 },
+	{ name = "ansi10", field = .Ansi, index = 10 },
+	{ name = "ansi11", field = .Ansi, index = 11 },
+	{ name = "ansi12", field = .Ansi, index = 12 },
+	{ name = "ansi13", field = .Ansi, index = 13 },
+	{ name = "ansi14", field = .Ansi, index = 14 },
+	{ name = "ansi15", field = .Ansi, index = 15 },
+	{ name = "frame", field = .Frame },
+	{ name = "focus_border", field = .FocusBorder },
+	{ name = "fps_bg", field = .FpsBg },
+	{ name = "fps_fg", field = .FpsFg },
+	{ name = "tab_bar_bg", field = .TabBarBg },
+	{ name = "tab_fg", field = .TabFg },
+	{ name = "tab_active_bg", field = .TabActiveBg },
+	{ name = "tab_active_fg", field = .TabActiveFg },
+	{ name = "tab_hover_bg", field = .TabHoverBg },
+	{ name = "selection_bg", field = .SelectionBg },
+	{ name = "selection_fg", field = .SelectionFg },
+}
+
+// 字段名 → 规格(大小写不敏感;未知 = false)
+ThemeFieldByName :: proc(name : string) -> (spec : ThemeFieldSpec, ok : bool) {
+	for i in 0 ..< len(THEME_FIELDS) {
+		if strings.equal_fold(THEME_FIELDS[i].name, name) {
+			return THEME_FIELDS[i], true
+		}
+	}
+	return {}, false
+}
+
+// 规格 → 规范字段名(FormatCommand 回显用;未知 = "?")
+ThemeFieldName :: proc(field : ThemeField, index : u8) -> string {
+	for i in 0 ..< len(THEME_FIELDS) {
+		if THEME_FIELDS[i].field == field && THEME_FIELDS[i].index == index {
+			return THEME_FIELDS[i].name
+		}
+	}
+	return "?"
+}
+
+// userapi:设置命名主题的单个字段(名字不存在 = 建槽;ansi 索引越界 = false)。
+// 若该主题正被激活,下一帧渲染即生效(注册表槽 = 唯一真相)。
+SetThemeField :: proc(name : string, field : ThemeField, index : u8, color : u32) -> bool {
+	slot := DefineTheme(name)
+	if slot == nil {
+		return false
+	}
+	switch field {
+	case .Fg:
+		slot.theme.fg = color
+	case .Bg:
+		slot.theme.bg = color
+	case .Cursor:
+		slot.theme.cursor = color
+	case .Ansi:
+		if int(index) >= len(slot.theme.ansi) {
+			return false
+		}
+		slot.theme.ansi[index] = color
+	case .Frame:
+		slot.theme.frame = color
+	case .FocusBorder:
+		slot.theme.focus_border = color
+	case .FpsBg:
+		slot.theme.fps_bg = color
+	case .FpsFg:
+		slot.theme.fps_fg = color
+	case .TabBarBg:
+		slot.theme.tab_bar_bg = color
+	case .TabFg:
+		slot.theme.tab_fg = color
+	case .TabActiveBg:
+		slot.theme.tab_active_bg = color
+	case .TabActiveFg:
+		slot.theme.tab_active_fg = color
+	case .TabHoverBg:
+		slot.theme.tab_hover_bg = color
+	case .SelectionBg:
+		slot.theme.selection_bg = color
+	case .SelectionFg:
+		slot.theme.selection_fg = color
+	}
+	return true
 }

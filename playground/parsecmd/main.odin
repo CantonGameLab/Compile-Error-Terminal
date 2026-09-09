@@ -15,7 +15,7 @@ main :: proc() {
 		`split right 0.5`,
 		`focus left`,
 		`feed "dir /b"`,
-		`autoclose false`,
+		`theme monokai`,
 		`count`,
 	}
 	for t in tests {

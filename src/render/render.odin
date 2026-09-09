@@ -212,14 +212,6 @@ EndFrame :: proc() {
 	s3.GL_SwapWindow(window)
 }
 
-// 整帧唯一入口(DAG 末端:只读 canvas/font → 屏幕):Begin → 场景 → End。
-// UI 悬浮层(scene 内部按需 Begin/End nanovg)与主批 flush 都由它收口。
-Draw :: proc() {
-	BeginFrame()
-	DrawFrame() // 内含背景 pass(scene 层统一帧序)
-	EndFrame()
-}
-
 // ---------------------------------------------------------------------------
 // 绘制
 // ---------------------------------------------------------------------------

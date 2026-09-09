@@ -1,8 +1,7 @@
 // 配置文件 = 命令脚本(一行 = 一条命令,与命令栏同语法):
-//   %APPDATA%\dterm\config.dterm        用户配置(存在且可读 = 只执行它,完全替代保底)
-//   <工作目录>\resource\config.dterm    保底配置(用户配置缺失/读失败时执行)
-// 加载分两趟(相位见 spec.odin 的 CmdScope):LoadConfig(.Global) → 建第一页 →
-// LoadConfig(.Window);文本在两趟之间持有,Window 趟结束释放(执行即生效,无配置状态留存)。
+//   入口:%APPDATA%\Local\dterm\config.dterm(用户配置)→ resource\config.dterm(保底配置)
+//   分片:入口用 load "<path>" 引入其它文件;相对路径 = 相对当前文件所在目录
+// 执行 = 逐行顺序执行,不分相位:顺序由配置自己负责(需要窗格的命令写在 page-new 之后)。
 // 行失败 = stderr 报 路径:行号 + 原因并继续(不整体回退:改错一行不该丢全部配置)。
 package command
 
@@ -13,55 +12,67 @@ import "core:strings"
 CONFIG_USER_DIR :: "dterm"
 CONFIG_USER_NAME :: "config.dterm"
 CONFIG_FALLBACK :: "resource/config.dterm"
+CONFIG_DEPTH_MAX :: 8 // load 嵌套上限
 
 ConfigStats :: struct {
-	path : string,   // 实际读取路径(借用 config_path;"" = 无配置)
-	lines : int,     // 本趟参与执行的行数
+	lines : int, // 执行的行数(含 load 展开的文件)
 	applied : int,
 	failed : int,
-	loaded : bool,   // 文本已读入
+	loaded : bool,   // 入口文件已读入并执行
 	fallback : bool, // 用的是保底配置
 }
 
-config_text : string   // 文件全文(两趟之间持有)
-config_path : string   // 实际路径(clone;错误行号用)
-config_fallback : bool
-config_loaded : bool
+config_dir : string // 当前执行文件所在目录(load 相对路径基准;执行期间有效)
+config_depth : int  // load 递归深度
 
-// 按相位执行配置行(两趟共用同一入口;见文件头)
-LoadConfig :: proc(phase : CmdScope) -> (stats : ConfigStats) {
-	if !config_loaded {
-		configRead()
+// 入口:定位配置文件(用户 → 保底)→ 逐行执行;返回统计
+LoadConfig :: proc() -> (stats : ConfigStats) {
+	data : []byte
+	path : string
+	if user_path, user_ok := configUserPath(); user_ok {
+		if d, err := os.read_entire_file_from_path(user_path, context.allocator); err == nil {
+			data, path = d, user_path
+		} else {
+			delete(user_path)
+		}
 	}
-	stats.path = config_path
-	stats.loaded = config_loaded
-	stats.fallback = config_fallback
-	if !config_loaded {
+	if data == nil {
+		if d, err := os.read_entire_file_from_path(CONFIG_FALLBACK, context.allocator); err == nil {
+			data, path = d, strings.clone(CONFIG_FALLBACK)
+			stats.fallback = true
+		}
+	}
+	if data == nil {
+		fmt.eprintln("config: 无配置文件(用户配置与", CONFIG_FALLBACK, "都不存在)")
 		return
 	}
+	defer delete(data)
+	defer delete(path)
+	stats.loaded = true
+	configRunText(string(data), path, &stats)
+	if GetKeyBindings().count == 0 {
+		fmt.eprintln("config: 没有任何键位绑定(bind 行缺失;F2 命令栏不可用)")
+	}
+	return
+}
+
+// 逐行执行一段配置文本(load 行经解释器递归展开;stats 累加)
+configRunText :: proc(text, path : string, stats : ^ConfigStats) {
+	saved_dir := config_dir
+	config_dir = pathDir(path) // 本文件内的 load 相对本文件目录解析
+	defer config_dir = saved_dir
 	errbuf : [256]u8
 	line_no := 0
 	i := 0
-	for i <= len(config_text) {
+	for i <= len(text) {
 		j := i
-		for j < len(config_text) && config_text[j] != '\n' {
+		for j < len(text) && text[j] != '\n' {
 			j += 1
 		}
-		line := strings.trim_space(strings.trim_right(config_text[i:j], "\r"))
+		line := strings.trim_space(strings.trim_right(text[i:j], "\r"))
 		i = j + 1
 		line_no += 1
 		if isConfigComment(line) {
-			continue
-		}
-		// 相位过滤:先取命令名查规格(避免 bind 子命令槽在非本趟相位白分配)
-		name := lineName(line)
-		spec := findSpec(name)
-		if spec == nil {
-			fmt.eprintfln("config %s:%d: 未知命令: %s", config_path, line_no, name)
-			stats.failed += 1
-			continue
-		}
-		if spec.scope != phase {
 			continue
 		}
 		stats.lines += 1
@@ -70,19 +81,33 @@ LoadConfig :: proc(phase : CmdScope) -> (stats : ConfigStats) {
 			if err == "" {
 				err = "执行失败" // 语法通过但动作返回 false(环境/状态不满足)
 			}
-			fmt.eprintfln("config %s:%d: %s", config_path, line_no, err)
+			fmt.eprintfln("config %s:%d: %s", path, line_no, err)
 			stats.failed += 1
 			continue
 		}
 		stats.applied += 1
 	}
-	if phase == .Window {
-		if GetKeyBindings().count == 0 {
-			fmt.eprintln("config: 没有任何键位绑定(bind 行缺失;F2 命令栏不可用)")
-		}
-		configRelease()
+}
+
+// load 目标(解释器调用):读文件并逐行执行;相对路径按当前文件目录解析。
+// 返回 false = 读失败或其中任一行失败(错误已逐行报出)。
+configLoadFile :: proc(target : string) -> bool {
+	if config_depth >= CONFIG_DEPTH_MAX {
+		fmt.eprintln("config: load 嵌套过深:", target)
+		return false
 	}
-	return
+	full := configResolve(target, config_dir)
+	data, err := os.read_entire_file_from_path(full, context.allocator)
+	if err != nil {
+		fmt.eprintln("config: 无法读取:", full)
+		return false
+	}
+	defer delete(data)
+	config_depth += 1
+	defer config_depth -= 1
+	stats : ConfigStats
+	configRunText(string(data), full, &stats)
+	return stats.failed == 0
 }
 
 // 配置文件里的查询命令 → stdout(与命令栏输出一致)
@@ -90,29 +115,7 @@ configOut :: proc(msg : string) {
 	fmt.println(msg)
 }
 
-// 定位并读入:用户配置优先;缺失/读失败回退保底;两者都无 = 无配置
-configRead :: proc() {
-	if path, ok := configUserPath(); ok {
-		if data, err := os.read_entire_file_from_path(path, context.allocator); err == nil {
-			config_text = string(data) // 零拷贝:所有权转给 config_text(configRelease 释放)
-			config_path = path
-			config_loaded = true
-			config_fallback = false
-			return
-		}
-		delete(path)
-	}
-	if data, err := os.read_entire_file_from_path(CONFIG_FALLBACK, context.allocator); err == nil {
-		config_text = string(data)
-		config_path = strings.clone(CONFIG_FALLBACK)
-		config_loaded = true
-		config_fallback = true
-		return
-	}
-	fmt.eprintln("config: 无配置文件(用户配置与", CONFIG_FALLBACK, "都不存在)")
-}
-
-// 用户配置路径:%APPDATA%\dterm\config.dterm(无 APPDATA 环境变量 = 不可用)
+// 用户配置路径:%APPDATA%\Local\dterm\config.dterm(无 APPDATA 环境变量 = 不可用)
 configUserPath :: proc() -> (path : string, ok : bool) {
 	appdata := os.get_env("APPDATA", context.allocator)
 	if len(appdata) == 0 {
@@ -122,27 +125,31 @@ configUserPath :: proc() -> (path : string, ok : bool) {
 	return fmt.aprintf("%s\\Local\\%s\\%s", appdata, CONFIG_USER_DIR, CONFIG_USER_NAME), true
 }
 
-// 释放配置文本(Window 趟结束;再次 LoadConfig 会重新读取)
-configRelease :: proc() {
-	if config_text != "" {
-		delete(config_text)
-		config_text = ""
+// 相对路径 → 相对 dir 解析(绝对路径原样:根斜杠 / 盘符开头)。
+// 返回借用包级缓冲,仅调用期间有效。
+config_resolve_buf : [1024]u8
+
+configResolve :: proc(target, dir : string) -> string {
+	if len(target) == 0 || dir == "" {
+		return target
 	}
-	if config_path != "" {
-		delete(config_path)
-		config_path = ""
+	if target[0] == '/' || target[0] == '\\' {
+		return target
 	}
-	config_loaded = false
-	config_fallback = false
+	if len(target) >= 2 && target[1] == ':' {
+		return target // C:\...
+	}
+	return fmt.bprintf(config_resolve_buf[:], "%s/%s", dir, target)
 }
 
-// 行首命令名(相位过滤用;不做完整解析)
-lineName :: proc(line : string) -> string {
-	i := 0
-	for i < len(line) && line[i] != ' ' && line[i] != '\t' {
-		i += 1
+// 路径的目录部分(最后一个 / 或 \ 之前;无 = "")
+pathDir :: proc(path : string) -> string {
+	for i := len(path) - 1; i >= 0; i -= 1 {
+		if path[i] == '/' || path[i] == '\\' {
+			return path[:i]
+		}
 	}
-	return line[:i]
+	return ""
 }
 
 // 空行 / 注释行(行首 # 或 //;字符串内的 # 不受影响)

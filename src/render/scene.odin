@@ -52,8 +52,7 @@ DrawFrame :: proc() {
 				return
 			}
 		}
-		win := cv.NodeWindow(node_h)
-		if win != nil {
+		if cv.NodeConsole(node_h) != nil {
 			drawConsole(node_h, bg, cv.WindowEffectiveRect(node_h)) // 内部按 console 句柄判定,无 console 直返
 		}
 	}
@@ -311,15 +310,12 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 	if node == nil {
 		return
 	}
-	win := cv.NodeWindow(node_h)
-	if win == nil {
-		return
-	}
-	console := cv.GetConsole(win.console_id)
+	console_h := node.console_id
+	console := cv.GetConsole(console_h)
 	if console == nil {
 		return
 	}
-	m := fnt.GetMetrics(win.font_id)
+	m := fnt.GetMetrics(console.font_id)
 	if m.cell_width <= 0 || m.cell_height <= 0 {
 		return
 	}
@@ -333,7 +329,7 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 	if tb == nil {
 		return
 	}
-	visible_top, _ := cv.ConsoleViewportTop(win.console_id)
+	visible_top, _ := cv.ConsoleViewportTop(console_h)
 
 	// 行连体 shaping 缓冲:模块级复用(零分配),逐行 resize 复用
 	for r in 0 ..< int(console.rows) {
@@ -385,17 +381,16 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 		resize(&draw_shaped, col_limit)
 		resize(&draw_orig, col_limit)
 		for c in 0 ..< col_limit {
-			g := fnt.GlyphIndex(win.font_id, line.cells[c].cp)
+			g := fnt.GlyphIndex(console.font_id, line.cells[c].cp)
 			draw_orig[c] = g
 			draw_shaped[c] = g
 		}
-		fnt.ShapeLine(win.font_id, &draw_shaped)
+		fnt.ShapeLine(console.font_id, &draw_shaped)
 		// 连体合并(未来 type4)会缩短数组;绘制按缩短后的长度截断
 		draw_limit = min(col_limit, len(draw_shaped))
 		// 第 2 趟:连体字形位图会溢出到相邻格(如 --- 的 32px 连体),
 		// 背景已在上趟定稿,此处只画字形。
 		// 字体变体:style key 变化才查询(变体 face / 合成兜底标志),run 内零查表
-		win_h := node.window_id
 		sty_key := u8(255)
 		fh : mem.Handle
 		bs, isyn : bool
@@ -413,7 +408,7 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 			}
 			if key != sty_key {
 				sty_key = key
-				fh, bs, isyn = cv.WindowFontVariant(win_h, cell.bold, cell.italic)
+				fh, bs, isyn = cv.ConsoleFontVariant(console_h, cell.bold, cell.italic)
 			}
 			cx := console.origin_x + f32(c) * m.cell_width
 			cy := console.origin_y + f32(r) * m.cell_height
@@ -426,7 +421,7 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 			}
 			gid := draw_shaped[c]
 			// fh ≠ 主字体时连体 gid 属主字体表:强制普通 cp 路径
-			drawCellGlyph(fh, cell.cp, gid, draw_orig[c], cx, cy + m.ascent, fg, bs, isyn, fh != win.font_id)
+			drawCellGlyph(fh, cell.cp, gid, draw_orig[c], cx, cy + m.ascent, fg, bs, isyn, fh != console.font_id)
 		}
 		// 装饰线(下划线/删除线/上划线):样式 run 合并,画在字形之上
 		drawDecoLine(line, col_limit, r, console, m, theme.fg)
@@ -468,7 +463,7 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 							cell := line.cells[int(console.cursor_col)]
 							if cell.cp != 0 {
 								// 粗体字符同样双描重绘(否则光标块下残留 1px 粗体边)
-								drawCellGlyph(win.font_id, cell.cp, 0, 0, cx, cy + m.ascent, theme.bg, false, false, false)
+								drawCellGlyph(console.font_id, cell.cp, 0, 0, cx, cy + m.ascent, theme.bg, false, false, false)
 							}
 						}
 					}

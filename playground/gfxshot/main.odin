@@ -122,7 +122,7 @@ main :: proc() {
 		fmt.eprintln("page failed")
 		return
 	}
-	if !cv.SetWindowFont("Consolas", 26) {
+	if !cv.SetConsoleFont("Consolas", 26) {
 		fmt.eprintln("font failed")
 		return
 	}
@@ -131,8 +131,7 @@ main :: proc() {
 		fmt.eprintln("console failed")
 		return
 	}
-	win := cv.NodeWindow(cv.WindowTreeRoot())
-	win.console_id = ch
+	cv.TreeNodeSetConsole(cv.WindowTreeRoot(), ch)
 
 	// 布局(几何按字体)
 	cv.ConsoleUpdateTree(cv.WindowTreeRoot())

@@ -1,7 +1,6 @@
 // PollSessions 语义测试(无头):
-// 1) 两个窗口有 console;一个 auto_close=true,一个 false
-// 2) 模拟"会话结束":手动置 Job 状态不可行(需真实 conpty),
-//    改为验证 collectLeaves 收集正确 + PollSessions 的空窗/无会话分支不误杀
+// 1) 三窗格(空窗格,无 console = 无会话)
+// 2) 验证 PollSessions 的"无会话/空窗格"分支不误杀 + 窗口销毁/轮询结束语义
 package main
 
 import ua "../../src/canvas"
@@ -23,28 +22,23 @@ check :: proc(name : string, cond : bool) {
 main :: proc() {
 	ua.PageNew() // CreateWindowTreeRoot 作用于当前页
 	root := ua.CreateWindowTreeRoot()
-	ua.SplitNewWindow(.LeftRight) // 2 窗
+	ua.SplitNewWindow(.LeftRight) // 2 窗格
 	ua.FocusMove(.Left)
-	ua.SplitNewWindow(.UpDown) // 3 窗
+	ua.SplitNewWindow(.UpDown) // 3 窗格
 
-	// 全部 auto_close = true
-	cur := ua.GetFocusWindow()
-	check("设置 auto_close", ua.SetAutoClose(true))
-	ua.SetFocusWindow(cur)
+	// 语义:返回"仍有窗格"(会话可有可无)。空窗格无 console = 无会话,窗格在 = 继续
+	check("无会话但窗格在:轮询继续", ua.PollSessions())
+	check("窗格数仍 = 3", ua.ConsoleCount() == 3)
 
-	// 语义:返回"仍有窗口"(会话可有可无)。无头环境无 conpty = 无会话,但窗口在 = 继续
-	check("无会话但窗口在:轮询继续", ua.PollSessions())
-	check("窗口数仍 = 3", ua.WindowCount() == 3)
-
-	// 销毁一个窗口,剩余 2
-	check("销毁焦点窗", ua.DestroyWindow())
-	check("窗口数 = 2", ua.WindowCount() == 2)
+	// 销毁一个窗格,剩余 2
+	check("销毁焦点窗格", ua.DestroyWindow())
+	check("窗格数 = 2", ua.ConsoleCount() == 2)
 	check("焦点有效", ua.GetFocusWindow().id != 0)
 
-	// 再销毁到空:最后一个窗口销毁 = 整树重置为空根叶(无窗口对象)
+	// 再销毁到空:最后一个窗格销毁 = 整树重置为空根叶(无 console)
 	check("销毁剩余", ua.DestroyWindow() && ua.DestroyWindow())
-	check("无窗口对象", cv.NodeWindow(cv.WindowTreeRoot()) == nil)
-	check("无窗口:会话轮询结束", !ua.PollSessions())
+	check("无 console", cv.NodeConsole(cv.WindowTreeRoot()) == nil)
+	check("无窗格:会话轮询结束", !ua.PollSessions())
 
 	fmt.printf("\n%s (%d failures)\n", fails == 0 ? "ALL PASS" : "SOME FAILED", fails)
 }

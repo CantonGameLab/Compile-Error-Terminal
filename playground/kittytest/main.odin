@@ -60,7 +60,7 @@ main :: proc() {
 		fmt.eprintln("page failed")
 		return
 	}
-	if !cv.SetWindowFont("Consolas", 26) {
+	if !cv.SetConsoleFont("Consolas", 26) {
 		fmt.eprintln("font failed")
 		return
 	}
@@ -73,8 +73,7 @@ main :: proc() {
 	}
 	_ = ct.StartReadThread(ctx)
 	ch, _ := cv.CreateConsole(40, 120, ctx)
-	win := cv.NodeWindow(cv.WindowTreeRoot())
-	win.console_id = ch
+	cv.TreeNodeSetConsole(cv.WindowTreeRoot(), ch)
 	cv.ConsoleUpdateTree(cv.WindowTreeRoot())
 
 	start := time.now()

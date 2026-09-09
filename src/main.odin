@@ -1,7 +1,7 @@
-// 窗口主循环(纯编排壳):初始化 → 配置两趟 → 建第一页 → 帧循环 → 清理。
+// 窗口主循环(纯编排壳):初始化 → 读配置 → 保底建页 → 帧循环。
 // 数据流:event/input → command(键优先消费)→ canvas → render,单向;main 不持业务状态。
-// 配置 = 命令脚本(见 command/config.odin):键位/主题/字体/默认启动全部来自配置文件,
-// 本文件不硬编码任何用户配置。
+// 配置 = 命令脚本(见 command/config.odin):键位/主题/字体/默认启动/页面布局全部来自
+// 配置文件(逐行顺序执行,load 就地展开),本文件不硬编码任何用户配置。
 package main
 
 import "canvas"
@@ -22,14 +22,11 @@ main :: proc() {
 		return
 	}
 
-	// 配置相位契约(见 command/config.odin):全局配置(默认启动/主题/键位/装饰)
-	// 必须在建根窗之前生效,窗口类配置(font/launch/split/页)必须在建根窗之后。
-	command.LoadConfig(.Global)
-	if canvas.PageNew().id == 0 {
-		fmt.eprintln("init page failed")
-		return
+	// 配置逐行执行;顺序由配置自己负责(需要窗格的命令写在 page-new 之后)。
+	command.LoadConfig()
+	if canvas.PageCount() == 0 {
+		canvas.PageNew() // 配置未建页:保底建第一页(空窗格,无默认启动)
 	}
-	command.LoadConfig(.Window)
 
 	//MAIN LOOP标准循环
 

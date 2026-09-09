@@ -28,15 +28,20 @@ main :: proc() {
 	check("index 232 → gray 08", cv.ResolveColor(index(232), 0), u32(0x080808))
 	check("index 255 → gray EE", cv.ResolveColor(index(255), 0), u32(0xEEEEEE))
 
-	fmt.println("== SetTheme 生效 ==")
-	t2 := t^
-	t2.ansi[1] = 0xABCDEF
-	t2.focus_border = 0x112233
-	cv.SetTheme(t2)
+	fmt.println("== 主题注册表:theme-set 生效 ==")
+	// 建一个命名主题并改字段(激活后 ResolveColor 走新表)
+	check("define+set ansi1", cv.SetThemeField("probe", .Ansi, 1, 0xABCDEF), true)
+	check("set focus_border", cv.SetThemeField("probe", .FocusBorder, 0, 0x112233), true)
+	check("activate probe", cv.SetThemeByName("probe"), true)
 	check("ansi override", cv.ResolveColor(index(1), 0), u32(0xABCDEF))
 	check("theme get", cv.GetTheme().focus_border, u32(0x112233))
-	cv.SetTheme(cv.DEFAULT_THEME)
+	check("slot lookup", cv.GetThemeSlot("probe") != nil, true)
+	// 回退:再建一个与 boot 同值的主题并激活(注册表无"取消激活"语义)
+	check("define restore", cv.SetThemeField("restore", .Ansi, 1, t.ansi[1]), true)
+	check("activate restore", cv.SetThemeByName("restore"), true)
 	check("restore", cv.ResolveColor(index(1), 0), t.ansi[1])
+	check("ansi index 越界", cv.SetThemeField("probe", .Ansi, 99, 0), false)
+	check("未定义主题激活失败", cv.SetThemeByName("no-such-theme"), false)
 
 	fmt.println("== SGR → cell 编码 ==")
 	ctx, ok := ct.CreateConptyContext({120, 40}, "cmd.exe")

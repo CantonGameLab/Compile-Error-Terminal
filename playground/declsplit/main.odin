@@ -38,7 +38,7 @@ TreeUnits := []string{
 	"InitWindowTree", "CreateWindowTreeNode", "GetWindowTreeNode",
 	"NodeHandleById", "WindowTreeRoot", "ResetWindowTree", "TreeNodeRemoveAll",
 	"SetFocus", "GetFocus", "FocusNeighbor", "focusDescend",
-	"TreeNodeSetWindow", "NodeWindow", "NodeContentTransform",
+	"TreeNodeSetConsole", "NodeConsole", "NodeContentTransform",
 	"nodeAtPoint", "nodeAtPointRec",
 	"TreeNodeSplit", "TreeNodeRemove", "treeNodePromote",
 	"TreeNodeSetSplitFactor", "TreeNodeSetSplitType",
@@ -51,10 +51,8 @@ TreeUnits := []string{
 	"Window_Width", "Window_Height", "DEFAULT_FRAME_WIDTH",
 }
 
-WinUnits := []string{
-	"Window", "CreateWindow", "GetWindow", "DestroyWindowSlot", "ensureWindow",
-	"windows",
-}
+// win.odin 已删除(Window 中间层取消:节点直接持 console,字体集归 Console)
+WinUnits := []string{}
 
 ItermUnits := []string{
 	"Iterm", "ToolType",
@@ -122,7 +120,7 @@ FileHead := map[string]string{
 // 树结构操作(分裂/摘除/挂载/重算/焦点/命中)+ 每帧树遍历编排(ConsoleUpdateTree)。
 // 焦点是树状态;命中测试(nodeAtPoint)属树几何。`,
 	"win.odin" =        `// 窗口表数据:Window(会话句柄 + 字体 + 工具浮层)的生命周期操作。
-// 窗口与树节点分离:TreeNode.window_id 挂载;创建/销毁/ensureWindow 归本文件。`,
+// 窗口与树节点分离:TreeNode.console_id 挂载;创建/销毁/ensureWindow 归本文件。`,
 	"iterm.odin" =      `// 工具浮层数据:Iterm(锚点/尺寸/渲染目标)+ ToolType 枚举。
 // 挂在所属窗口的 iterms 数组上;锚定变换经窗口几何换算。`,
 	"commandbar.odin" = `// 悬浮控制台数据:CommandBar(可见性 + 输入缓冲 + 编辑光标 + 视图偏移)。

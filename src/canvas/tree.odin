@@ -24,11 +24,9 @@ SplitType :: enum u8 {
 	LeftRight,
 }
 
-MAX_WINDOW_SLOTS :: 256
-
-// 树节点:纯结构(几何/分割/父子/挂载窗口)。leaf 挂 window_id,内部节点 = 0
+// 树节点:纯结构(几何/分割/父子/挂载 console)。leaf 挂 console_id,内部节点 = 0
 WindowTreeNode :: struct {
-	window_id : mem.Handle, // 挂载的窗口;0 = 空(仅 leaf 有意义)
+	console_id : mem.Handle, // leaf 承载的 console(窗格内容);0 = 空窗格
 
 	using transform : Transform,
 
@@ -126,7 +124,7 @@ ResetWindowTree :: proc() {
 		TreeNodeRemoveAll(right)
 	}
 	if n := GetWindowTreeNode(root); n != nil {
-		n.window_id = {}
+		n.console_id = {}
 	}
 }
 
@@ -214,26 +212,19 @@ focusDescend :: proc(h : mem.Handle, dir : FocusDirection) -> mem.Handle {
 }
 
 // ---------------------------------------------------------------------------
-// 节点内容操作(leaf 节点挂载一个窗口)
+// 节点内容操作(leaf 节点直接持一个 console)
 // ---------------------------------------------------------------------------
-// 挂载/摘除窗口(0 = 摘除);仅 leaf 有效。交换窗口 = 交换两节点的 window_id
-TreeNodeSetWindow :: proc(h : mem.Handle, win_h : mem.Handle) -> bool {
+// 挂载/摘除 console(0 = 摘除);仅 leaf 有效。交换窗格内容 = 交换两节点的 console_id
+TreeNodeSetConsole :: proc(h : mem.Handle, console_h : mem.Handle) -> bool {
 	node := GetWindowTreeNode(h)
 	if node == nil || !node.is_leaf {
 		return false
 	}
-	node.window_id = win_h
+	node.console_id = console_h
 	return true
 }
 
-// 取节点挂载的窗口;内部节点或空返回 nil(句柄有效性由 GenArray 判定)
-NodeWindow :: proc(h : mem.Handle) -> ^Window {
-	node := GetWindowTreeNode(h)
-	if node == nil {
-		return nil
-	}
-	return GetWindow(node.window_id)
-}
+// 取节点挂载的 console / console 句柄见 console.odin(NodeConsole / NodeConsoleId)
 
 // leaf 节点几何即内容矩形(窗口占满节点);transform 是节点内联字段,
 // 读取直接 GetWindowTreeNode(h).transform,不再提供拷贝包装。
@@ -492,7 +483,7 @@ treeNodePromote :: proc(parent_h, son_h : mem.Handle) {
 	// parent 是根(无父):根壳常驻,直接吸收 son(后续分裂/删除依赖稳定的根槽;
 	// 释放根会让其 id 进空闲池,被复用成"第二个根")
 	p.is_leaf = son.is_leaf
-	p.window_id = son.window_id
+	p.console_id = son.console_id
 	if sl := son.left_son_id; sl.id != 0 {
 		linkSon(parent_h, sl, true) // 孙改挂根壳(linkSon 自动断 son→孙旧边)
 	}
@@ -707,8 +698,8 @@ nearestWindowLeaf :: proc(start : mem.Handle) -> mem.Handle {
 		if node == nil {
 			continue
 		}
-		if cur != start && node.is_leaf && NodeWindow(cur) != nil {
-			return cur
+		if cur != start && node.is_leaf && NodeConsole(cur) != nil {
+			return cur // 只挑有 console 的窗格(空窗格不作为迁移目标)
 		}
 		// 邻居展开(优先级 father → lson → rson)
 		if node.parent_id.id != 0 && !seen[int(node.parent_id.id)] {
@@ -843,17 +834,13 @@ ConsoleUpdateTree :: proc(node_h : mem.Handle) {
 			layoutWalk(node.right_son_id)
 			return
 		}
-		win := NodeWindow(node_h)
-		if win == nil || win.console_id.id == 0 {
-			return
-		}
-		console := GetConsole(win.console_id)
+		console := NodeConsole(node_h)
 		if console == nil {
 			return
 		}
-		m := fnt.GetMetrics(win.font_id) // 字体 = 窗口配置(唯一真相;console 无副本)
+		m := fnt.GetMetrics(console.font_id) // 字体 = console 配置(唯一真相)
 		// 单窗模式:焦点窗布局用有效矩形(树区),隐藏窗照常用自身节点矩形(值不变)
-		ConsoleUpdateLayout(win.console_id, WindowEffectiveRect(node_h), m.cell_width, m.cell_height)
+		ConsoleUpdateLayout(node.console_id, WindowEffectiveRect(node_h), m.cell_width, m.cell_height)
 	}
 
 }

@@ -43,7 +43,6 @@ CommandStringKind :: enum u8 {
 	FontSizeDown,
 	Launch,       // sval
 	Feed,         // sval
-	AutoClose,    // bval
 	ClearConsole, // target
 	Scroll,       // fval(行数,正下负上)
 	ReviewUp,
@@ -64,6 +63,7 @@ CommandStringKind :: enum u8 {
 	SelectAll,
 	// 外观 / UI
 	Theme,          // sval(空 = 列出主题)
+	ThemeSet,       // tfield + tindex + color
 	UIFont,         // sval + fval
 	UIFontReset,
 	Borderless,     // mode
@@ -71,6 +71,7 @@ CommandStringKind :: enum u8 {
 	BgShader,       // sval(空 = 重载默认文件)
 	ToggleCommandBar,
 	DefaultLaunch,  // sval(cmd)+ sval2(font)+ fval(size)
+	Load,           // sval(配置文件路径;执行另一个命令文件)
 	// 键位
 	SetBinding,   // sc + mods + sub(子命令句柄,解析层分配)
 	UnsetBinding, // sc + mods
@@ -95,11 +96,13 @@ ParsedCommand :: struct {
 	mode : ToggleMode,        // Single / Borderless / VSync
 	fval : f32,               // Split factor / Factor / Font size / Scroll 行数 / DefaultLaunch size
 	ival : int,               // FactorLeaf 叶子序号 / Page 序号
-	bval : bool,              // AutoClose
 	sval : string,            // 第一字符串参数(借用输入内存)
 	sval2 : string,           // 第二字符串参数(仅 DefaultLaunch 的字体名)
 	sc : u32,                 // SetBinding/UnsetBinding:scancode 数值
 	mods : KeyMods,           // SetBinding/UnsetBinding:修饰位
+	color : u32,              // ThemeSet:24bit RGB
+	tfield : cv.ThemeField,   // ThemeSet:字段
+	tindex : u8,              // ThemeSet:ansi 索引
 	sub : mem.Handle,         // SetBinding:子命令(解析层 Alloc 入 sub_commands)
 }
 
@@ -181,18 +184,23 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 		}
 	case .Count:
 		if out != nil {
-			out(fmt.tprintf("windows: %d", cv.WindowCount()))
+			out(fmt.tprintf("windows: %d", cv.ConsoleCount()))
 		}
 		return true
 	case .Info:
-		info, ok := cv.GetWindowInfo(cmd.target)
+		info, ok := cv.GetConsoleInfo(cmd.target)
 		if !ok {
 			return false
 		}
 		if out != nil {
-			out(fmt.tprintf("window %d  font %s %.0f  console %dx%d  review %d  factor %.2f  autoclose %v",
-				info.node.id, info.font_name, info.font_size, info.cols, info.rows,
-				info.review_line, info.split_factor, info.auto_close))
+			if !info.has_console {
+				out(fmt.tprintf("window %d  空窗格  factor %.2f", info.node.id, info.split_factor))
+			} else {
+				out(fmt.tprintf("window %d  font %s %.0f  %s %dx%d  review %d  factor %.2f",
+					info.node.id, info.font_name, info.font_size,
+					info.has_session ? "session" : "no-session",
+					info.cols, info.rows, info.review_line, info.split_factor))
+			}
 		}
 		return true
 	case .FocusGet:
@@ -203,21 +211,19 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 
 	// ---- 字体 / 会话 ----
 	case .Font:
-		return cv.SetWindowFont(cmd.sval, cmd.fval, cmd.target)
+		return cv.SetConsoleFont(cmd.sval, cmd.fval, cmd.target)
 	case .FontSize:
-		return cv.SetWindowFontSize(cmd.fval, cmd.target)
+		return cv.SetConsoleFontSize(cmd.fval, cmd.target)
 	case .FontSizeUp:
-		return cv.AdjustFontSize(2, cmd.target)
+		return cv.AdjustConsoleFontSize(2, cmd.target)
 	case .FontSizeDown:
-		return cv.AdjustFontSize(-2, cmd.target)
+		return cv.AdjustConsoleFontSize(-2, cmd.target)
 	case .Launch:
 		return cv.LaunchConsole(cmd.sval, cmd.target)
 	case .Feed:
 		return cv.FeedConsole(transmute([]u8)cmd.sval, cmd.target)
-	case .AutoClose:
-		return cv.SetAutoClose(cmd.bval, cmd.target)
 	case .ClearConsole:
-		return cv.ClearWindowConsole(cmd.target)
+		return cv.ClearConsoleSession(cmd.target)
 	case .Scroll:
 		return cv.ConsoleScroll(int(cmd.fval), cmd.target)
 	case .ReviewUp:
@@ -293,15 +299,21 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 		if cmd.sval == "" {
 			if out != nil {
 				cur := cv.GetTheme()
-				themes := cv.GetThemes()
-				for i in 0 ..< len(themes) {
-					mark := themes[i].theme.bg == cur.bg && themes[i].theme.fg == cur.fg ? "*" : " "
-					out(fmt.tprintf("%s %s", mark, themes[i].name))
+				reg := cv.GetThemes()
+				for i in 1 ..< cv.MAX_THEME_SLOTS {
+					slot := mem.GetIndex(reg, i)
+					if slot == nil {
+						continue
+					}
+					mark := &slot.theme == cur ? "*" : " "
+					out(fmt.tprintf("%s %s", mark, string(slot.name[:slot.name_len])))
 				}
 			}
 			return true
 		}
 		return cv.SetThemeByName(cmd.sval)
+	case .ThemeSet:
+		return cv.SetThemeField(cmd.sval, cmd.tfield, cmd.tindex, cmd.color)
 	case .UIFont:
 		return cv.SetUIFont(cmd.sval, cmd.fval)
 	case .UIFontReset:
@@ -342,6 +354,8 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 	case .DefaultLaunch:
 		cv.SetDefaultLaunch(cmd.sval, cmd.sval2, cmd.fval)
 		return true
+	case .Load:
+		return configLoadFile(cmd.sval)
 
 	// ---- 键位 ----
 	case .SetBinding:
@@ -392,17 +406,13 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 	return false
 }
 
-// 焦点(或 target)console 的行数;无 console 返回 0(翻页/滚动安全空转)
+// 焦点(或 target)窗格 console 的行数;无 console 返回 0(翻页/滚动安全空转)
 focusRows :: proc(target : mem.Handle) -> int {
 	node_h := target
 	if node_h.id == 0 {
 		node_h = cv.GetFocusWindow()
 	}
-	win := cv.NodeWindow(node_h)
-	if win == nil {
-		return 0
-	}
-	console := cv.GetConsole(win.console_id)
+	console := cv.NodeConsole(node_h)
 	if console == nil {
 		return 0
 	}
@@ -489,12 +499,6 @@ ParseCommandStringEx :: proc(s : string, errbuf : []u8) -> (pc : ParsedCommand, 
 				return {}, usageText(errbuf, spec, "需要整数"), false
 			}
 			pc.ival = int(v)
-		case .Bool:
-			v, vok := parseBool(tok)
-			if !vok {
-				return {}, usageText(errbuf, spec, "需要 true/false"), false
-			}
-			pc.bval = v
 		case .Toggle:
 			v, vok := parseToggle(tok)
 			if !vok {
@@ -525,6 +529,19 @@ ParseCommandStringEx :: proc(s : string, errbuf : []u8) -> (pc : ParsedCommand, 
 			}
 			pc.sc = u32(key)
 			pc.mods = mods
+		case .ThemeField:
+			fspec, fok := cv.ThemeFieldByName(tok)
+			if !fok {
+				return {}, usageText(errbuf, spec, "未知字段"), false
+			}
+			pc.tfield = fspec.field
+			pc.tindex = fspec.index
+		case .Color:
+			c, cok := parseColor(tok)
+			if !cok {
+				return {}, usageText(errbuf, spec, "需要 #RRGGBB"), false
+			}
+			pc.color = c
 		case .SubCommand:
 			sub, sub_err, sub_ok := ParseCommandStringEx(tok, errbuf)
 			if !sub_ok {
@@ -602,9 +619,6 @@ FormatCommand :: proc(cmd : ParsedCommand, buf : []u8) -> string {
 			tmp : [32]u8
 			cat(buf, &n, " ")
 			cat(buf, &n, fmt.bprintf(tmp[:], "%d", cmd.ival))
-		case .Bool:
-			cat(buf, &n, " ")
-			cat(buf, &n, cmd.bval ? "true" : "false")
 		case .Toggle:
 			switch cmd.mode {
 			case .On:
@@ -628,6 +642,13 @@ FormatCommand :: proc(cmd : ParsedCommand, buf : []u8) -> string {
 			combo : [64]u8
 			cat(buf, &n, " ")
 			cat(buf, &n, comboName(cmd.mods, inp.Scancode(cmd.sc), &combo))
+		case .ThemeField:
+			cat(buf, &n, " ")
+			cat(buf, &n, cv.ThemeFieldName(cmd.tfield, cmd.tindex))
+		case .Color:
+			cbuf : [8]u8
+			cat(buf, &n, " ")
+			cat(buf, &n, formatColor(&cbuf, cmd.color))
 		case .SubCommand:
 			sub := mem.Get(&sub_commands, cmd.sub)
 			if sub == nil {
@@ -860,14 +881,44 @@ parseF32 :: proc(s : string) -> (f32, bool) {
 	return v, true
 }
 
-parseBool :: proc(s : string) -> (bool, bool) {
-	switch {
-	case nameEq(s, "true"), nameEq(s, "on"), s == "1", nameEq(s, "yes"):
-		return true, true
-	case nameEq(s, "false"), nameEq(s, "off"), s == "0", nameEq(s, "no"):
-		return false, true
+// 颜色:"#RRGGBB" / "RRGGBB" / "0xRRGGBB" → 24bit RGB(大小写不敏感)
+parseColor :: proc(s : string) -> (u32, bool) {
+	t := s
+	if len(t) >= 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X') {
+		t = t[2:]
+	} else if len(t) >= 1 && t[0] == '#' {
+		t = t[1:]
 	}
-	return false, false
+	if len(t) != 6 {
+		return 0, false
+	}
+	v : u32
+	for i in 0 ..< 6 {
+		c := t[i]
+		d : u32
+		switch {
+		case c >= '0' && c <= '9':
+			d = u32(c - '0')
+		case c >= 'a' && c <= 'f':
+			d = u32(c - 'a') + 10
+		case c >= 'A' && c <= 'F':
+			d = u32(c - 'A') + 10
+		case:
+			return 0, false
+		}
+		v = (v << 4) | d
+	}
+	return v, true
+}
+
+// 颜色 → "#RRGGBB"(借用调用方缓冲,仅调用期间有效)
+formatColor :: proc(buf : ^[8]u8, c : u32) -> string {
+	hex := "0123456789ABCDEF"
+	buf[0] = '#'
+	for i in 0 ..< 6 {
+		buf[1 + i] = hex[(c >> u32((5 - i) * 4)) & 0xF]
+	}
+	return string(buf[:7])
 }
 
 parseToggle :: proc(s : string) -> (ToggleMode, bool) {

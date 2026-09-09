@@ -113,16 +113,15 @@ updateCursor :: proc() {
 		n = nodeAtPoint(inp.Mouse.x, inp.Mouse.y)
 	}
 	if n.id != 0 {
-		if win := NodeWindow(n); win != nil {
-			console := GetConsole(win.console_id)
-			if console != nil && selection.buffer_h.id != 0 &&
+		if console := NodeConsole(n); console != nil {
+			if selection.buffer_h.id != 0 &&
 				console.active_term_buffer_id == selection.buffer_h {
-				m := fnt.GetMetrics(win.font_id)
+				m := fnt.GetMetrics(console.font_id)
 				tb := GetTermBuffer(selection.buffer_h)
 				if m.cell_width > 0 && m.cell_height > 0 && tb != nil {
 					col := clamp(int((inp.Mouse.x - console.origin_x) / m.cell_width), 0, int(console.cols) - 1)
 					row := clamp(int((inp.Mouse.y - console.origin_y) / m.cell_height), 0, int(console.rows) - 1)
-					top, _ := ConsoleViewportTop(win.console_id)
+					top, _ := ConsoleViewportTop(NodeConsoleId(n))
 					line := top + row
 					w := 1
 					if line >= 0 && line < len(tb.lines) && col < len(tb.lines[line].cells) {

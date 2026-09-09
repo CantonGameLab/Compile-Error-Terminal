@@ -64,17 +64,14 @@ ProcessMouse :: proc() {
 	if node_h.id == 0 {
 		return
 	}
-	win := NodeWindow(node_h)
-	if win == nil {
-		return
-	}
-	console := GetConsole(win.console_id)
+	console_h := NodeConsoleId(node_h)
+	console := GetConsole(console_h)
 	if console == nil {
 		return
 	}
 	// 应用接管:鼠标事件编码为 SGR 序列写回应用,不再做 UI 动作
 	if console.vt.mouse_mode != 0 {
-		mouseToApp(console, win.font_id)
+		mouseToApp(console, console.font_id)
 		return
 	}
 	// UI 绑定:点击聚焦;左键选择(单击/双击词/三击行/Shift 扩展);中键粘贴;
@@ -89,9 +86,9 @@ ProcessMouse :: proc() {
 			selection.active = true
 		} else {
 			// 连击:双击词选 / 三击行选;否则普通(替换旧选区)
-			mtr := fnt.GetMetrics(win.font_id)
+			mtr := fnt.GetMetrics(console.font_id)
 			tb := GetTermBuffer(console.active_term_buffer_id)
-			top, _ := ConsoleViewportTop(win.console_id)
+			top, _ := ConsoleViewportTop(console_h)
 			line, col := screenToBuffer(console, tb, top, mtr, m.x, m.y)
 			switch clickChain(console.active_term_buffer_id, line, col) {
 			case 2:
@@ -113,17 +110,13 @@ ProcessMouse :: proc() {
 	}
 }
 
-// 焦点窗口的 console(绑定动作的目标)
+// 焦点窗格的 console(绑定动作的目标)
 focusConsole :: proc() -> ^Console {
 	p := CurrentPage()
 	if p == nil || p.focused.id == 0 {
 		return nil
 	}
-	win := NodeWindow(p.focused)
-	if win == nil {
-		return nil
-	}
-	return GetConsole(win.console_id)
+	return NodeConsole(p.focused)
 }
 
 // ---------------------------------------------------------------------------

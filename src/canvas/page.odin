@@ -102,7 +102,7 @@ PageDestroy :: proc(page_h : mem.Handle) -> bool {
 	return true
 }
 
-// 自动清出:页内所有窗口已销毁(用户关光/会话 auto_close)→ 自动关页;
+// 自动清出:页内所有窗格已销毁(用户关光/会话结束)→ 自动关页;
 // 最后一页保留(空态等主循环判定退出)。当前页销毁后重新遍历,直至稳定。
 PageAutoClean :: proc() {
 	for {
@@ -113,7 +113,7 @@ PageAutoClean :: proc() {
 		it : mem.Iter(MAX_PAGE_SLOTS, Page) = mem.All(&pages)
 		for ph in mem.next(&it) {
 			if p := mem.Get(&pages, ph); p != nil {
-				if firstLeafWithWindow(p.tree_root).id == 0 {
+				if firstLeafWithConsole(p.tree_root).id == 0 {
 					PageDestroy(ph)
 					cleaned = true
 					break // 页销毁后句柄/焦点迁移,重新遍历
@@ -126,7 +126,7 @@ PageAutoClean :: proc() {
 	}
 }
 
-// 整树销毁:leaf 窗口(会话 → 槽)先清,再递归释放节点(含根)
+// 整树销毁:leaf 的 console(会话/字体/缓冲)先销毁,再递归释放节点(含根)
 destroyPageTree :: proc(root : mem.Handle) {
 	if root.id == 0 {
 		return
@@ -135,9 +135,9 @@ destroyPageTree :: proc(root : mem.Handle) {
 	count := 0
 	collectLeaves(root, &leaves, &count)
 	for i in 0 ..< count {
-		if win := NodeWindow(leaves[i]); win != nil {
-			DestroyConsole(win.console_id)
-			DestroyWindowSlot(GetWindowTreeNode(leaves[i]).window_id)
+		node := GetWindowTreeNode(leaves[i])
+		if node != nil {
+			DestroyConsole(node.console_id)
 		}
 	}
 	TreeNodeRemoveAll(root)
@@ -418,18 +418,18 @@ PageClearFocus :: proc(node_h : mem.Handle) {
 	it : mem.Iter(MAX_PAGE_SLOTS, Page) = mem.All(&pages)
 	for ph in mem.next(&it) {
 		if p := mem.Get(&pages, ph); p != nil && p.focused == node_h {
-			p.focused = firstLeafWithWindow(p.tree_root) // 0 = 无窗
+			p.focused = firstLeafWithConsole(p.tree_root) // 0 = 无窗格
 		}
 	}
 }
 
-// 子树中最左的有窗口 leaf;无 = 0
-firstLeafWithWindow :: proc(root : mem.Handle) -> mem.Handle {
+// 子树中最左的有 console 的 leaf;无 = 0
+firstLeafWithConsole :: proc(root : mem.Handle) -> mem.Handle {
 	leaves : [MAX_TREE_NODE_SLOTS]mem.Handle
 	count := 0
 	collectLeaves(root, &leaves, &count)
 	for i in 0 ..< count {
-		if NodeWindow(leaves[i]) != nil {
+		if NodeConsole(leaves[i]) != nil {
 			return leaves[i]
 		}
 	}

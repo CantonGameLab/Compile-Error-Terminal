@@ -27,8 +27,8 @@ main :: proc() {
 		logf("FAIL: no page\n")
 		return
 	}
-	logf("== step: SetWindowFont ==\n")
-	if !cv.SetWindowFont("resource/font/Go-Mono/GoMonoNerdFontMono-Regular.ttf", 18) {
+	logf("== step: SetConsoleFont ==\n")
+	if !cv.SetConsoleFont("resource/font/Go-Mono/GoMonoNerdFontMono-Regular.ttf", 18) {
 		logf("FAIL: font failed\n")
 		return
 	}
@@ -38,12 +38,7 @@ main :: proc() {
 		return
 	}
 	logf("launched\n")
-	win := cv.NodeWindow(cv.GetFocusWindow())
-	if win == nil {
-		logf("FAIL: no window\n")
-		return
-	}
-	console := cv.GetConsole(win.console_id)
+	console := cv.NodeConsole(cv.GetFocusWindow())
 	if console == nil {
 		logf("FAIL: no console\n")
 		return
@@ -61,7 +56,7 @@ main :: proc() {
 		time.sleep(200 * time.Millisecond)
 		alive_rt := ct.IsReadThreadAlive(console.conpty_handle)
 		stay := cv.PollSessions()
-		windows := cv.WindowCount()
+		windows := cv.ConsoleCount()
 		logf(fmt.tprintf("t=%4dms readthread_alive=%v poll_sessions=%v windows=%d\n",
 			(i + 1) * 200, alive_rt, stay, windows))
 		if !stay {

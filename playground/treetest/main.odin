@@ -80,9 +80,9 @@ validateTree :: proc(tag : string) {
 		fmt.println("  !! root has parent")
 	}
 	walk(root)
-	if v_leaf != cv.WindowCount() {
+	if v_leaf != cv.ConsoleCount() {
 		v_bad += 1
-		fmt.printf("  !! leaf count %d != window count %d (disconnected)\n", v_leaf, cv.WindowCount())
+		fmt.printf("  !! leaf count %d != window count %d (disconnected)\n", v_leaf, cv.ConsoleCount())
 	}
 	if v_bad == 0 {
 		fmt.printf("%-24s TREE VALID\n", tag)
@@ -103,12 +103,15 @@ main :: proc() {
 	win3 := cv.GetFocusWindow()
 	cv.SetFocusWindow(win3)
 
-	// 模拟 setupConsole(SetWindowFont 建窗):给三个窗都挂窗口
+	// 模拟窗格内容建立(SetConsoleFont 建 console):给三个窗格都挂 console
 	wns := [3]mem.Handle{win2, win3, win4}
 	for n in wns {
 		nnode := cv.GetWindowTreeNode(n)
-		if nnode != nil && nnode.window_id.id == 0 {
-			cv.TreeNodeSetWindow(n, cv.CreateWindow())
+		if nnode != nil && nnode.console_id.id == 0 {
+			ch, cok := cv.CreateConsole(24, 80, {})
+			if cok {
+				cv.TreeNodeSetConsole(n, ch)
+			}
 		}
 	}
 	fmt.printf("init: root=%d win1=%d win2=%d win3=%d win4=%d\n",
@@ -139,9 +142,9 @@ main :: proc() {
 	cv.ToggleCommandBar()
 	fmt.printf("toggle-off: barVisible=%v\n", cv.CommandBarVisible())
 
-	// 用户场景:split right 新窗后 F2(split 自动分配 window)
+	// 用户场景:split right 新窗格后 F2(空窗格,console 懒创建)
 	split_h := cv.SplitNewWindow(.LeftRight)
-	fmt.printf("post-split: focus=%d window=%v\n", split_h.id, cv.NodeWindow(split_h) != nil)
+	fmt.printf("post-split: focus=%d console=%v\n", split_h.id, cv.NodeConsole(split_h) != nil)
 	ok := cv.ToggleCommandBar()
 	fmt.printf("toggle@split-new: ok=%v barVisible=%v\n", ok, cv.CommandBarVisible())
 	dump("final2")

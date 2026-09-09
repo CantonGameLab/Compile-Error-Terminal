@@ -59,7 +59,8 @@ Line :: struct {
 // ---------------------------------------------------------------------------
 // TermBuffer
 // ---------------------------------------------------------------------------
-MAX_TERM_BUFFER_SLOTS :: 64
+// 容量依据:每 console 最多 2 个 buffer(主屏 + 交替屏),console 上限见 console.odin
+MAX_TERM_BUFFER_SLOTS :: 128
 
 MAX_SCROLLBACK_LINES :: 10000
 

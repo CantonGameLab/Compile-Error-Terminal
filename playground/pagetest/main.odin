@@ -113,11 +113,11 @@ main :: proc() {
 	p6 := cv.PageNew()
 	if p6.id != 0 {
 		e1 := cv.SplitNewWindow(.LeftRight) // 焦点 = 右节点(e1)
-		win_id := cv.GetWindowTreeNode(e1).window_id
+		win_id := cv.GetWindowTreeNode(e1).console_id
 		left_leaf := cv.GetWindowTreeNode(cv.GetWindowTreeNode(e1).parent_id).left_son_id
 		cv.ExchangeWindow(.Left) // 与左邻居交换
 		f := cv.GetFocusWindow()
 		check("exchange: focus moved to left leaf", f == left_leaf, true)
-		check("exchange: same window object", cv.GetWindowTreeNode(f).window_id == win_id, true)
+		check("exchange: same window object", cv.GetWindowTreeNode(f).console_id == win_id, true)
 	}
 }

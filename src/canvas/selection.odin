@@ -178,11 +178,8 @@ normalizeEnd :: proc(tb : ^TermBuffer, line : int, col : ^int) {
 }
 
 selectionBegin :: proc(node_h : mem.Handle, x, y : f32) -> bool {
-	win := NodeWindow(node_h)
-	if win == nil {
-		return false
-	}
-	console := GetConsole(win.console_id)
+	console_h := NodeConsoleId(node_h)
+	console := GetConsole(console_h)
 	if console == nil {
 		return false
 	}
@@ -190,16 +187,16 @@ selectionBegin :: proc(node_h : mem.Handle, x, y : f32) -> bool {
 	if tb == nil {
 		return false
 	}
-	m := fnt.GetMetrics(win.font_id)
+	m := fnt.GetMetrics(console.font_id)
 	if m.cell_width <= 0 || m.cell_height <= 0 {
 		return false
 	}
-	top, _ := ConsoleViewportTop(win.console_id)
+	top, _ := ConsoleViewportTop(console_h)
 	line, col := screenToBuffer(console, tb, top, m, x, y)
 	selection = Selection {
 		active = true,
 		buffer_h = console.active_term_buffer_id,
-		host = win.console_id,
+		host = console_h,
 		pivot = { line = line, col = col },
 		cur = { line = line, col = col },
 	}
@@ -227,15 +224,13 @@ selectionUpdate :: proc(x, y : f32) -> bool {
 	return true
 }
 
-// 宿主窗口字体(唯一持有 buffer 的 console → 它的窗口;窗口表无反向索引,遍历)
+// 宿主 console 的字体(selection.host 就是 console 句柄:一次解码,无反向索引)
 hostFont :: proc() -> mem.Handle {
-	it : mem.Iter(MAX_WINDOW_SLOTS, Window) = mem.All(&windows)
-	for wh in mem.next(&it) {
-		if w := mem.Get(&windows, wh); w != nil && w.console_id == selection.host {
-			return w.font_id
-		}
+	console := GetConsole(selection.host)
+	if console == nil {
+		return {}
 	}
-	return {}
+	return console.font_id
 }
 
 // ---------------------------------------------------------------------------
@@ -525,11 +520,8 @@ SelectionSelectAll :: proc() -> bool {
 	if node_h.id == 0 {
 		return false
 	}
-	win := NodeWindow(node_h)
-	if win == nil {
-		return false
-	}
-	console := GetConsole(win.console_id)
+	console_h := NodeConsoleId(node_h)
+	console := GetConsole(console_h)
 	if console == nil {
 		return false
 	}
@@ -540,7 +532,7 @@ SelectionSelectAll :: proc() -> bool {
 	selection = Selection {
 		active = true,
 		buffer_h = console.active_term_buffer_id,
-		host = win.console_id,
+		host = console_h,
 		pivot = { line = 0, col = 0 },
 		cur = { line = len(tb.lines) - 1, col = int(console.cols) },
 	}

@@ -7,6 +7,7 @@ package command
 
 import inp "../input"
 import mem "../memory"
+import "core:strings"
 
 // 组合修饰:Alt/Ctrl/Shift 自由组合;规则 = Shift 不得单独出现(须与 Alt/Ctrl 伴生)
 KeyMod :: enum u8 {
@@ -91,26 +92,61 @@ ProcessKeys :: proc() {
 // ---------------------------------------------------------------------------
 // 绑定表 userapi(用户配置:main.initWindows 配置段落 / bind 命令)
 // ---------------------------------------------------------------------------
-// 添加/覆盖一条绑定(同 key+mods 覆盖已有);表满返回 false
+// 添加/覆盖一条绑定(同 key+mods 覆盖已有);表满返回 false。
+// 命令里的字符串参数解析期借用输入缓冲(配置文件文本 / 命令栏事件槽),绑定表生命周期
+// 更长 → 在此 clone(表持有;覆盖/解绑/清空时配对释放)。
 SetKeyBinding :: proc(key : inp.Scancode, mods : KeyMods, cmd : ParsedCommand) -> bool {
 	kb := GetKeyBindings()
+	c := cmd
+	if cmd.sval != "" {
+		c.sval = strings.clone(cmd.sval)
+	}
+	if cmd.sval2 != "" {
+		c.sval2 = strings.clone(cmd.sval2)
+	}
 	for i in 0 ..< kb.count {
 		if kb.bindings[i].key == key && kb.bindings[i].mods == mods {
-			kb.bindings[i].cmd = cmd
+			releaseBindingStrings(&kb.bindings[i])
+			kb.bindings[i].cmd = c
 			return true
 		}
 	}
 	if kb.count >= len(kb.bindings) {
+		// 表满:释放刚 clone 的字符串(未入表)
+		if c.sval != "" {
+			delete(c.sval)
+			c.sval = ""
+		}
+		if c.sval2 != "" {
+			delete(c.sval2)
+			c.sval2 = ""
+		}
 		return false
 	}
-	kb.bindings[kb.count] = Binding { key = key, mods = mods, cmd = cmd }
+	kb.bindings[kb.count] = Binding { key = key, mods = mods, cmd = c }
 	kb.count += 1
 	return true
 }
 
+// 释放绑定命令里 clone 的字符串(与 SetKeyBinding 的 clone 配对)
+releaseBindingStrings :: proc(b : ^Binding) {
+	if b.cmd.sval != "" {
+		delete(b.cmd.sval)
+		b.cmd.sval = ""
+	}
+	if b.cmd.sval2 != "" {
+		delete(b.cmd.sval2)
+		b.cmd.sval2 = ""
+	}
+}
+
 // 清空绑定表(重复初始化 = 清零重建,无状态判定)
 ClearKeyBindings :: proc() {
-	GetKeyBindings().count = 0
+	kb := GetKeyBindings()
+	for i in 0 ..< kb.count {
+		releaseBindingStrings(&kb.bindings[i])
+	}
+	kb.count = 0
 }
 
 // 移除组合 (key, mods) 的绑定(不存在 = false;交换删除,顺序无关)
@@ -118,6 +154,7 @@ UnsetKeyBinding :: proc(key : inp.Scancode, mods : KeyMods) -> bool {
 	kb := GetKeyBindings()
 	for i in 0 ..< kb.count {
 		if kb.bindings[i].key == key && kb.bindings[i].mods == mods {
+			releaseBindingStrings(&kb.bindings[i])
 			kb.bindings[i] = kb.bindings[kb.count - 1]
 			kb.count -= 1
 			return true

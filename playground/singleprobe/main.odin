@@ -34,7 +34,7 @@ main :: proc() {
 	// 平铺:split(焦点 = 右叶,共 2 窗);左叶 = 原根
 	ok = cmd.ExecuteCommandString("split right")
 	check("split in tiled", ok, true)
-	check("window count", cv.WindowCount(), 2)
+	check("window count", cv.ConsoleCount(), 2)
 	focus := p.focused
 	left := cv.WindowTreeRoot()
 	check("focus is right leaf", focus != left, true)
@@ -74,11 +74,11 @@ main :: proc() {
 	ok = cmd.ExecuteCommandString("factorleaf 1 0.5")
 	check("factorleaf blocked", ok, false)
 
-	// Launch:焦点已占用(会分屏)→ Single 下拒绝;未开 single 前不拦(见下)
-	win := cv.NodeWindow(focus)
+	// Launch:焦点已绑会话(会分屏)→ Single 下拒绝;未开 single 前不拦(见下)
 	ch, cok := cv.CreateConsole(24, 80, {}) // 工具 console(无会话)
 	check("tool console", cok, true)
-	win.console_id = ch
+	cv.TreeNodeSetConsole(focus, ch)
+	// 无字体时 LaunchConsole 本就失败:先确认会话占用路径被 Single 拦截(失败原因不区分)
 	ok = cmd.ExecuteCommandString("launch bash")
 	check("launch busy blocked in single", ok, false)
 
@@ -86,7 +86,7 @@ main :: proc() {
 	ok = cmd.ExecuteCommandString("destroy")
 	check("destroy allowed in single", ok, true)
 	check("mode back Tiled", p.view_mode, cv.PageMode.Tiled)
-	check("window count after destroy", cv.WindowCount(), 1)
+	check("console count after destroy", cv.ConsoleCount(), 1)
 
 	// 唯一剩余窗(single 中销毁):回 Tiled;页空保留(最后一页)
 	ok = cmd.ExecuteCommandString("single")
@@ -95,5 +95,5 @@ main :: proc() {
 	check("destroy root in single", ok, true)
 	check("mode back Tiled (root)", p.view_mode, cv.PageMode.Tiled)
 	check("page still alive", cv.PageCount(), 1)
-	check("root window cleared", cv.NodeWindow(cv.WindowTreeRoot()) == nil, true)
+	check("root console cleared", cv.NodeConsole(cv.WindowTreeRoot()) == nil, true)
 }
