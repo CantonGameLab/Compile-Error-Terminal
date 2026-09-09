@@ -4,6 +4,8 @@
 // 参考:alacritty(269 索引表)/ WT(扁平配色方案)/ kitty(color0-255 + 边框色独立)。
 package canvas
 
+import "core:strings"
+
 // 颜色引用编码(u32,CellStyle.fg/bg):
 //   0x00RRGGBB            直接 RGB(SGR 38;2;r;g;b)
 //   0x01xxxxxx(低24 = n)  索引色 n:0-15 → theme.ansi[n];16-255 → 固定 cube/灰度
@@ -264,7 +266,43 @@ TANGO_DARK_THEME := Theme {
 	selection_fg = 0xD3D7CF,
 }
 
-// userapi:整表替换(配置入口/main.initWindows);下一帧渲染全部按新表解码(缓冲零重写)
+// ---------------------------------------------------------------------------
+// 主题表(名字 → Theme):配置文件/命令栏按名字切换,缺省列出
+// ---------------------------------------------------------------------------
+ThemeSpec :: struct {
+	name : string, // 命令参数名(theme monokai)
+	theme : Theme,
+}
+
+// 内置主题(顺序 = 列出顺序;值引用上面的命名常量,单一真相源在常量)
+THEME_SPECS := [?]ThemeSpec {
+	{ name = "default", theme = DEFAULT_THEME },
+	{ name = "dracula", theme = DRACULA_THEME },
+	{ name = "nord", theme = NORD_THEME },
+	{ name = "solarized-dark", theme = SOLARIZED_DARK_THEME },
+	{ name = "gruvbox-dark", theme = GRUVBOX_DARK_THEME },
+	{ name = "monokai", theme = MONOKAI_THEME },
+	{ name = "one-dark", theme = ONE_DARK_THEME },
+	{ name = "tango-dark", theme = TANGO_DARK_THEME },
+}
+
+// 主题表(只读遍历:命令 theme 无参列出)
+GetThemes :: proc() -> []ThemeSpec {
+	return THEME_SPECS[:]
+}
+
+// userapi:按名字切换(大小写不敏感;未知名字 = false,保留旧主题)
+SetThemeByName :: proc(name : string) -> bool {
+	for i in 0 ..< len(THEME_SPECS) {
+		if strings.equal_fold(THEME_SPECS[i].name, name) {
+			SetTheme(THEME_SPECS[i].theme)
+			return true
+		}
+	}
+	return false
+}
+
+// userapi:整表替换(配置入口/命令 theme);下一帧渲染全部按新表解码(缓冲零重写)
 SetTheme :: proc(t : Theme) {
 	current_theme = t
 }

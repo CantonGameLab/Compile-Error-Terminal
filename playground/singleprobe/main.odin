@@ -15,11 +15,15 @@ check :: proc(name : string, got, want : $T) {
 }
 
 main :: proc() {
-	// 解析别名
+	// 解析:别名 + 三态参数
 	pc, ok := cmd.ParseCommandString("single")
-	check("parse single", ok && pc.kind == .ToggleSingleMode, true)
+	check("parse single", ok && pc.kind == .Single && pc.mode == .Toggle, true)
 	pc, ok = cmd.ParseCommandString("single-mode")
-	check("parse single-mode", ok && pc.kind == .ToggleSingleMode, true)
+	check("parse single-mode", ok && pc.kind == .Single, true)
+	pc, ok = cmd.ParseCommandString("single on")
+	check("parse single on", ok && pc.kind == .Single && pc.mode == .On, true)
+	pc, ok = cmd.ParseCommandString("single off")
+	check("parse single off", ok && pc.kind == .Single && pc.mode == .Off, true)
 
 	// 建页:默认 Tiled(枚举零值)
 	page := cv.PageNew()

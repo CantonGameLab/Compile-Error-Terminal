@@ -33,35 +33,36 @@ main :: proc() {
 	fmt.printf("  .. sc=%d mods=%v sub=%d\n", pc.sc, pc.mods, pc.sub.id)
 	ok = cmd.ExecuteCommandString("bind alt+shift+l \"split right\"")
 	check("bind exec", ok, true)
-	b, found := cmd.GetKeyBinding(inp.Scancode(pc.sc), pc.mods)
-	check("bind hit", found, true)
+	b := cmd.GetKeyBinding(inp.Scancode(pc.sc), pc.mods)
+	check("bind hit", b != nil, true)
 	check("bind cmd kind", b.cmd.kind, cmd.CommandStringKind.Split)
 	check("bind cmd dir", b.cmd.dir, cv.SplitType.LeftRight)
 
 	// 大小写不敏感 + 无修饰
 	ok = cmd.ExecuteCommandString("bind F2 \"toggle-commandbar\"")
 	check("bind f2 exec", ok, true)
-	_, found = cmd.GetKeyBinding(.F2, {})
-	check("f2 hit", found, true)
+	check("f2 hit", cmd.GetKeyBinding(.F2, {}) != nil, true)
 
 	// 覆盖:同 key+mods 换命令
 	ok = cmd.ExecuteCommandString("bind alt+shift+l \"split down\"")
 	check("bind overwrite", ok, true)
-	b, _ = cmd.GetKeyBinding(inp.Scancode(pc.sc), pc.mods)
+	b = cmd.GetKeyBinding(inp.Scancode(pc.sc), pc.mods)
 	check("overwrite dir", b.cmd.dir, cv.SplitType.UpDown)
 
 	// unbind
 	ok = cmd.ExecuteCommandString("unbind alt+shift+l")
 	check("unbind exec", ok, true)
-	_, found = cmd.GetKeyBinding(inp.Scancode(pc.sc), pc.mods)
-	check("unbind gone", found, false)
+	check("unbind gone", cmd.GetKeyBinding(inp.Scancode(pc.sc), pc.mods) == nil, true)
 	ok = cmd.ExecuteCommandString("unbind alt+shift+l")
 	check("unbind twice fail", ok, false)
 
-	// bindings 输出
+	// bindings 输出(可再解析:格式往返)
 	cmd.ExecuteCommandString("bindings", collect)
 	check("bindings count>0", line_count > 0, true)
 	fmt.printf("  .. %s\n", lines[0])
+	back, back_ok := cmd.ParseCommandString(lines[0])
+	check("bindings 行可再解析", back_ok && back.kind == .SetBinding, true)
+	cmd.FreeParsedCommand(back)
 
 	// 补缺动作命令解析
 	pc, ok = cmd.ParseCommandString("fontsizeup")

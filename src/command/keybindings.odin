@@ -1,7 +1,8 @@
 // 快捷键绑定表(动作层):键事件通道 → 绑定表 → 数据化命令。
 // 消费链契约:command 先行(命中即置 consumed = true,序列不再流向下游);
 // canvas 经 input.TakeAppInput 拿"未消费剩余"(文本/输入)。
-// 绑定表操作(Set/Clear/Unset/Get)= command 域 userapi(用户配置:main.initWindows / bind 命令)。
+// 表内容 = 配置文件(command/config.odin)的 bind 行;运行期经 bind/unbind 命令增删。
+// 表操作(Set/Clear/Unset/Get)= command 域 userapi。
 package command
 
 import inp "../input"
@@ -42,8 +43,8 @@ Binding :: struct {
 	cmd : ParsedCommand,
 }
 
-// 默认绑定表(唯一实例):结构 = 槽数组 + 计数。读写经 GetKeyBindings 指针
-// 直接操作;userapi(SetKeyBinding/ClearKeyBindings/...)是面向用户的表操作接口。
+// 绑定表(唯一实例):结构 = 槽数组 + 计数,容量 64(配置文件 bind 行 + 运行期 bind)。
+// 读写经 GetKeyBindings 指针直接操作;userapi(SetKeyBinding/ClearKeyBindings/...)是表操作接口。
 MAX_DEFAULT_BINDINGS :: 64
 
 KeyBindings :: struct {
@@ -57,19 +58,17 @@ GetKeyBindings :: proc() -> ^KeyBindings {
 	return &key_bindings
 }
 
-// 查绑定:精确匹配 (key, mods);命中返回命令(表由 main 配置/用户 bind 命令填充)
-findBinding :: proc(sc : u32, mods : KeyMods) -> (Binding, bool) {
-	//if mods == {.Shift} {
-	//	return {}, false // Shift 单独 = 非法触发(不参与匹配)
-	//}
+// 查绑定:精确匹配 (key, mods);命中返回表内槽指针(nil = 未命中)
+// 表由配置文件(command/config.odin 的 bind 行)填充,运行期由 bind/unbind 命令增删。
+findBinding :: proc(sc : u32, mods : KeyMods) -> ^Binding {
 	kb := GetKeyBindings()
 	for i in 0 ..< kb.count {
 		b := &kb.bindings[i]
 		if u32(b.key) == sc && b.mods == mods {
-			return b^, true
+			return b
 		}
 	}
-	return {}, false
+	return nil
 }
 
 // 每帧调用(main,先于 canvas.Update):绑定表 → ExecuteCommand(数据化动作);
@@ -81,7 +80,7 @@ ProcessKeys :: proc() {
 		if ev == nil || ev.consumed {
 			continue
 		}
-		if b, ok := findBinding(ev.sc, modsFromByte(ev.mods)); ok {
+		if b := findBinding(ev.sc, modsFromByte(ev.mods)); b != nil {
 			ExecuteCommand(b.cmd)
 			ev.consumed = true // 动作已执行,序列不再进应用
 		}
@@ -127,13 +126,13 @@ UnsetKeyBinding :: proc(key : inp.Scancode, mods : KeyMods) -> bool {
 	return false
 }
 
-// 按 (key, mods) 查询绑定
-GetKeyBinding :: proc(key : inp.Scancode, mods : KeyMods) -> (Binding, bool) {
+// 按 (key, mods) 查询绑定:返回表内槽指针(nil = 无;直接读字段,不做值拷贝)
+GetKeyBinding :: proc(key : inp.Scancode, mods : KeyMods) -> ^Binding {
 	kb := GetKeyBindings()
 	for i in 0 ..< kb.count {
 		if kb.bindings[i].key == key && kb.bindings[i].mods == mods {
-			return kb.bindings[i], true
+			return &kb.bindings[i]
 		}
 	}
-	return {}, false
+	return nil
 }

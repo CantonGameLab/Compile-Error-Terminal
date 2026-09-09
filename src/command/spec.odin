@@ -1,0 +1,324 @@
+// 命令规格表(语法层数据):命令名/别名/参数形态/相位/用法/说明。
+// 解析、参数校验、错误文本、FormatCommand(逆变换)、help 全部由本表驱动 ——
+// 新命令 = 表项 + ExecuteCommand 分支,解析器里不写命令名特判。
+// 顺序 = help 输出顺序;args 按语法位置排列,None 结尾。
+package command
+
+// 参数形态:解析器逐位取用(位置 = 语法位置)
+ArgKind :: enum u8 {
+	None,       // 结束标记
+	Str,        // "..." 或裸词 → sval(第二个 Str 参数 → sval2;借用输入内存)
+	F32,        // 数字 → fval
+	I32,        // 非负整数 → ival
+	Bool,       // true/false/on/off/1/0 → bval(必填)
+	Toggle,     // on/off;省略 → mode = .Toggle(三态)
+	SplitDir,   // right|left|up|down|h|v → dir + split_first
+	FocusArg,   // id 或方向词 → kind 分派 FocusId/FocusDir
+	KeyCombo,   // mods+key → sc + mods
+	SubCommand, // 命令字符串(递归解析)→ sub 句柄
+}
+
+MAX_CMD_ARGS :: 3
+
+// 命令相位:Global = 不依赖页/窗口存在(配置文件在建第一页之前执行);
+// Window = 依赖当前页/窗口(建第一页之后执行)。命令的固有属性,非配置专用开关。
+CmdScope :: enum u8 {
+	Global,
+	Window,
+}
+
+CommandSpec :: struct {
+	name   : string,                // 规范名(格式化/help 用)
+	alias  : string,                // 别名("" = 无)
+	kind   : CommandStringKind,     // 默认 kind(FocusArg 可改判)
+	args   : [MAX_CMD_ARGS]ArgKind, // 位置参数形态(None 结尾)
+	req    : u8,                    // 前 req 个必填(其余可省)
+	target : bool,                  // 允许末尾 @id(窗口类命令)
+	scope  : CmdScope,
+	usage  : string,                // 参数摘要(help/错误信息)
+	help   : string,                // 一句说明
+}
+
+COMMAND_SPECS := [?]CommandSpec {
+	// ---- 窗口树 / 焦点 ----
+	{
+		name = "split", kind = .Split, args = {.SplitDir, .F32, .None}, req = 1, target = true,
+		scope = .Window, usage = "<right|left|up|down> [factor] [@id]",
+		help = "分裂窗口;left/up = 新窗在首侧,factor = 原窗占比(默认 0.5)",
+	},
+	{
+		name = "focus", kind = .FocusId, args = {.FocusArg, .None, .None}, req = 1,
+		scope = .Window, usage = "<id|left|right|up|down>",
+		help = "聚焦窗口(按 id 或方向导航)",
+	},
+	{
+		name = "destroy", alias = "close", kind = .Destroy, target = true,
+		scope = .Window, usage = "[@id]",
+		help = "关闭窗口及其会话(唯一剩余窗口 = 清空整树)",
+	},
+	{
+		name = "factor", kind = .Factor, args = {.F32, .None, .None}, req = 1, target = true,
+		scope = .Window, usage = "<ratio> [@id]",
+		help = "设置窗口父节点比例(0.05..0.95)",
+	},
+	{
+		name = "factorleaf", kind = .FactorLeaf, args = {.I32, .F32, .None}, req = 2,
+		scope = .Window, usage = "<n> <ratio>",
+		help = "设置先序叶子序号 n(1-based)认领的 split 比例",
+	},
+	{
+		name = "exchange", kind = .Exchange, args = {.FocusArg, .None, .None}, req = 1, target = true,
+		scope = .Window, usage = "<left|right|up|down> [@id]",
+		help = "与方向邻居交换窗口内容(树结构不变)",
+	},
+	{
+		name = "single", alias = "single-mode", kind = .Single, args = {.Toggle, .None, .None},
+		scope = .Window, usage = "[on|off]",
+		help = "单窗显示模式:焦点窗独占树区(省略参数 = 翻转)",
+	},
+	{
+		name = "count", alias = "windows", kind = .Count,
+		scope = .Window, usage = "",
+		help = "查询窗口数量",
+	},
+	{
+		name = "info", kind = .Info, target = true,
+		scope = .Window, usage = "[@id]",
+		help = "查询窗口信息(字体/会话/比例/自动关闭)",
+	},
+	{
+		name = "focus-get", alias = "getfocus", kind = .FocusGet,
+		scope = .Window, usage = "",
+		help = "查询焦点窗口 id",
+	},
+
+	// ---- 字体 / 会话 ----
+	{
+		name = "font", kind = .Font, args = {.Str, .F32, .None}, req = 1, target = true,
+		scope = .Window, usage = `"<path|name>" <size> [@id]`,
+		help = "设置窗口字体(路径或系统字体名;单个数字 = 只改字号)",
+	},
+	{
+		name = "fontsize", kind = .FontSize, args = {.F32, .None, .None}, req = 1, target = true,
+		scope = .Window, usage = "<size> [@id]",
+		help = "改字号(保留字体)",
+	},
+	{
+		name = "fontsizeup", kind = .FontSizeUp, target = true,
+		scope = .Window, usage = "[@id]",
+		help = "字号 +2",
+	},
+	{
+		name = "fontsizedown", kind = .FontSizeDown, target = true,
+		scope = .Window, usage = "[@id]",
+		help = "字号 -2",
+	},
+	{
+		name = "launch", kind = .Launch, args = {.Str, .None, .None}, req = 1, target = true,
+		scope = .Window, usage = `"<cmd>" [@id]`,
+		help = "用窗口字体启动 console 应用(需先设字体)",
+	},
+	{
+		name = "feed", kind = .Feed, args = {.Str, .None, .None}, req = 1, target = true,
+		scope = .Window, usage = `"<text>" [@id]`,
+		help = "向窗口会话写入输入",
+	},
+	{
+		name = "autoclose", kind = .AutoClose, args = {.Bool, .None, .None}, req = 1, target = true,
+		scope = .Window, usage = "<true|false> [@id]",
+		help = "应用退出后是否自动关窗(默认 true)",
+	},
+	{
+		name = "clearconsole", alias = "clearc", kind = .ClearConsole, target = true,
+		scope = .Window, usage = "[@id]",
+		help = "清空窗口会话(保留窗口与字体)",
+	},
+	{
+		name = "scroll", kind = .Scroll, args = {.F32, .None, .None}, req = 1, target = true,
+		scope = .Window, usage = "<lines> [@id]",
+		help = "历史滚动:正 = 向下(新),负 = 向上(旧,进 review)",
+	},
+	{
+		name = "reviewup", kind = .ReviewUp, target = true,
+		scope = .Window, usage = "[@id]",
+		help = "上翻一屏历史",
+	},
+	{
+		name = "reviewdown", kind = .ReviewDown, target = true,
+		scope = .Window, usage = "[@id]",
+		help = "下翻一屏历史",
+	},
+	{
+		name = "review-exit", alias = "exitreview", kind = .ExitReview, target = true,
+		scope = .Window, usage = "[@id]",
+		help = "退出 review 回实时跟随",
+	},
+
+	// ---- 页 ----
+	{
+		name = "page-new", kind = .PageNew, args = {.Str, .None, .None}, req = 0,
+		scope = .Window, usage = `["<title>"]`,
+		help = "新建页并切换(可选标题;自动建根窗 + 默认启动)",
+	},
+	{
+		name = "page", kind = .PageSwitch, args = {.I32, .None, .None}, req = 1,
+		scope = .Window, usage = "<n>",
+		help = "切换页(n = 页存活序,1-based)",
+	},
+	{
+		name = "page-next", kind = .PageNext,
+		scope = .Window, usage = "",
+		help = "下一页(环绕)",
+	},
+	{
+		name = "page-prev", kind = .PagePrev,
+		scope = .Window, usage = "",
+		help = "上一页(环绕)",
+	},
+	{
+		name = "page-close", kind = .PageClose, args = {.I32, .None, .None}, req = 0,
+		scope = .Window, usage = "[n]",
+		help = "关页(缺省 = 当前页;最后一页拒绝)",
+	},
+	{
+		name = "page-title", alias = "title", kind = .PageTitle, args = {.Str, .I32, .None}, req = 1,
+		scope = .Window, usage = `"<title>" [n]`,
+		help = "设置页标题(缺省 = 当前页)",
+	},
+	{
+		name = "pages", kind = .PageList,
+		scope = .Window, usage = "",
+		help = "列出所有页(序号/标题/当前标记)",
+	},
+
+	// ---- 选区 / 剪贴板 ----
+	{
+		name = "copy", kind = .CopySelection,
+		scope = .Window, usage = "",
+		help = "复制文本选区到剪贴板",
+	},
+	{
+		name = "paste", kind = .PasteClipboard,
+		scope = .Window, usage = "",
+		help = "粘贴剪贴板到焦点窗口",
+	},
+	{
+		name = "clearselection", alias = "deselect", kind = .SelectionClear,
+		scope = .Window, usage = "",
+		help = "清除文本选区",
+	},
+	{
+		name = "selectall", kind = .SelectAll,
+		scope = .Window, usage = "",
+		help = "全选焦点窗口缓冲",
+	},
+
+	// ---- 外观 / UI ----
+	{
+		name = "theme", kind = .Theme, args = {.Str, .None, .None}, req = 0,
+		scope = .Global, usage = "[name]",
+		help = "切换主题(缺省 = 列出全部主题)",
+	},
+	{
+		name = "uifont", kind = .UIFont, args = {.Str, .F32, .None}, req = 2,
+		scope = .Global, usage = `"<path|name>" <size>`,
+		help = "设置 UI 字体(页签/状态栏/FPS 共用)",
+	},
+	{
+		name = "uifont-reset", alias = "uireset", kind = .UIFontReset,
+		scope = .Global, usage = "",
+		help = "UI 字体回默认(consola 18)",
+	},
+	{
+		name = "borderless", alias = "toggle-borderless", kind = .Borderless, args = {.Toggle, .None, .None},
+		scope = .Global, usage = "[on|off]",
+		help = "无边框窗口(省略参数 = 翻转)",
+	},
+	{
+		name = "vsync", kind = .VSync, args = {.Toggle, .None, .None},
+		scope = .Global, usage = "[on|off]",
+		help = "垂直同步(省略参数 = 翻转)",
+	},
+	{
+		name = "bgshader", alias = "bg", kind = .BgShader, args = {.Str, .None, .None}, req = 0,
+		scope = .Global, usage = `["<path>"]`,
+		help = "背景 shader:缺省 = 重载默认文件,带路径 = 编译该文件",
+	},
+	{
+		name = "toggle-commandbar", alias = "togglebar", kind = .ToggleCommandBar,
+		scope = .Global, usage = "",
+		help = "命令栏开关",
+	},
+	{
+		name = "default-launch", alias = "startup", kind = .DefaultLaunch, args = {.Str, .Str, .F32}, req = 1,
+		scope = .Global, usage = `"<cmd>" ["<font>" <size>]`,
+		help = "新建窗口的默认启动配置(cmd 空 = 不自动启动)",
+	},
+
+	// ---- 键位 ----
+	{
+		name = "bind", kind = .SetBinding, args = {.KeyCombo, .SubCommand, .None}, req = 2,
+		scope = .Global, usage = `<mods+key> "<命令>"`,
+		help = "绑定键位(mods 前缀 alt/ctrl/shift/win,以 + 连键名)",
+	},
+	{
+		name = "unbind", kind = .UnsetBinding, args = {.KeyCombo, .None, .None}, req = 1,
+		scope = .Global, usage = "<mods+key>",
+		help = "移除绑定(不存在 = 失败)",
+	},
+	{
+		name = "bindings", kind = .BindingsGet,
+		scope = .Global, usage = "",
+		help = "枚举全部绑定(输出可再 bind)",
+	},
+
+	// ---- 帮助 ----
+	{
+		name = "help", alias = "?", kind = .Help, args = {.Str, .None, .None}, req = 0,
+		scope = .Global, usage = "[命令]",
+		help = "列出全部命令(带参数 = 单条用法)",
+	},
+}
+
+// 命令名 → 规格(别名一并匹配;大小写不敏感,线性扫描:冷路径)
+findSpec :: proc(name : string) -> ^CommandSpec {
+	for i in 0 ..< len(COMMAND_SPECS) {
+		if nameEq(COMMAND_SPECS[i].name, name) || nameEq(COMMAND_SPECS[i].alias, name) {
+			return &COMMAND_SPECS[i]
+		}
+	}
+	return nil
+}
+
+// kind → 规格(FormatCommand 用;FocusDir 与 FocusId 共用 focus 行)
+specForKind :: proc(kind : CommandStringKind) -> ^CommandSpec {
+	if kind == .FocusDir {
+		return findSpec("focus")
+	}
+	for i in 0 ..< len(COMMAND_SPECS) {
+		if COMMAND_SPECS[i].kind == kind {
+			return &COMMAND_SPECS[i]
+		}
+	}
+	return nil
+}
+
+// ASCII 大小写不敏感比较(命令名/键名统一策略;无分配)
+nameEq :: proc(a, b : string) -> bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i in 0 ..< len(a) {
+		ca, cb := a[i], b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 32
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 32
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}

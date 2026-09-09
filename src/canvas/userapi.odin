@@ -1,5 +1,20 @@
-// 用户接口层:面向意图的函数族(窗口生命周期/会话/字体/滚动),
-// CommandBar 与子进程指令通道(parser)的绑定目标;id 省略 = 当前焦点。
+// 用户接口层(userapi):面向意图的函数族(窗口生命周期/会话/字体/滚动/焦点/查询),
+// 命令栏、键位绑定、配置文件(command/config.odin)、main 的绑定目标;
+// id 省略(0)= 当前焦点窗口;失败 = false / 空句柄(尽力而为,不抛错),无效输入 = 空操作。
+//
+// 分层规则(见 docs/CODING_STYLE.md 3.3):userapi 只给用户与配置段落;程序内部代码
+// 一律 GetXxx() 指针直改数据,不调 Set 系列。域内 userapi 归各自数据类文件,本文件
+// 只放窗口/会话/字体/焦点域:
+//   默认启动配置  SetDefaultLaunch / GetDefaultLaunch
+//   窗口树        CreateWindowTreeRoot / SplitNewWindow / DestroyWindow / SetSplitFactor*
+//                 ExchangeWindow / SetFocusWindow / FocusMove / GetFocusWindow
+//   窗口属性      SetWindowFont / SetWindowFontSize / AdjustFontSize / SetAutoClose
+//   会话          LaunchConsole / FeedConsole / ClearWindowConsole / PollSessions
+//   历史滚动      ConsoleScroll / ConsoleExitReview
+//   查询          WindowCount / GetSplitFactor / GetWindowInfo
+// 其他域:主题 theme.odin / UI 字体 ui.odin / 页 page.odin / 选区 selection.odin /
+// 命令栏 commandbar.odin / 键位 command/keybindings.odin / 窗口装饰与 shader render。
+// 命令字符串 → 本层的映射 = command/spec.odin(表)+ ExecuteCommand(唯一解释器)。
 package canvas
 
 import ct "../conpty"
@@ -84,9 +99,10 @@ CreateWindowTreeRoot :: proc() -> mem.Handle {
 // 后续 SetWindowFont/launch/工具直接可用);新窗成为焦点。
 // new_on_first = 新窗放首侧(左/上):分裂后交换左右子窗内容 ——
 // split left/up 即"新窗在左/上、原窗在右/下"(默认 false = 右/下)。
+// factor = 原窗(首子)占比(0.05..0.95 由 TreeNodeSetSplitFactor 校验;<= 0 = 0.5)。
 // 树级 TreeNodeSplit 保持纯结构;窗口分配在用户语义层(SplitNewWindow)完成。
 // 新窗按默认启动配置应用(cmd 留空 = 空白窗格不启动)。
-SplitNewWindow :: proc(dir : SplitType, id : mem.Handle = {}, new_on_first := false) -> mem.Handle {
+SplitNewWindow :: proc(dir : SplitType, id : mem.Handle = {}, new_on_first := false, factor : f32 = 0.5) -> mem.Handle {
 	if singleGuard() {
 		return {} // 单窗模式:分屏禁
 	}
@@ -94,7 +110,11 @@ SplitNewWindow :: proc(dir : SplitType, id : mem.Handle = {}, new_on_first := fa
 	if node_h.id == 0 {
 		return {}
 	}
-	_, new_h, ok := TreeNodeSplit(node_h, dir, 0.5)
+	f := factor
+	if f <= 0 {
+		f = 0.5
+	}
+	_, new_h, ok := TreeNodeSplit(node_h, dir, f)
 	if !ok {
 		return {}
 	}
@@ -264,6 +284,23 @@ SetSplitFactorLeaf :: proc(n : int, factor : f32) -> bool {
 		return false
 	}
 	return TreeNodeSetSplitFactor(owner, factor)
+}
+
+// 查询 id(或焦点)window 父节点的 split_factor(根窗无父 = false)
+GetSplitFactor :: proc(id : mem.Handle = {}) -> (f32, bool) {
+	node_h := resolveWindow(id)
+	if node_h.id == 0 {
+		return 0, false
+	}
+	node := GetWindowTreeNode(node_h)
+	if node == nil {
+		return 0, false
+	}
+	parent := GetWindowTreeNode(node.parent_id)
+	if parent == nil {
+		return 0, false
+	}
+	return parent.split_factor, true
 }
 
 // ---------------------------------------------------------------------------
@@ -453,9 +490,7 @@ FeedConsole :: proc(data : []byte, id : mem.Handle = {}) -> bool {
 	if console == nil {
 		return false
 	}
-	if tb := GetTermBuffer(console.active_term_buffer_id); tb != nil {
-		tb.review_line = 0 // 输入即回普通模式(实时跟随)
-	}
+	exitReview(console) // 输入即回实时(单一写点)
 	console.input_activity_ms = inp.NowTicks()
 	// conpty 句柄无效(工具 console 等)由 WriteConptyInput 内部返回 false
 	_, ok := ct.WriteConptyInput(console.conpty_handle, data)
@@ -583,6 +618,33 @@ ConsoleScroll :: proc(delta : int, id : mem.Handle = {}) -> bool {
 	return true
 }
 
+// 退出 review 回普通模式(实时跟随);无会话 = false。键盘输入路径见 FeedConsole。
+ConsoleExitReview :: proc(id : mem.Handle = {}) -> bool {
+	node_h := resolveWindow(id)
+	if node_h.id == 0 {
+		return false
+	}
+	win := NodeWindow(node_h)
+	if win == nil {
+		return false
+	}
+	console := GetConsole(win.console_id)
+	if console == nil {
+		return false
+	}
+	return exitReview(console)
+}
+
+// review 退出的唯一写点(输入 / 命令 / 将来入口都走这里)
+exitReview :: proc(console : ^Console) -> bool {
+	tb := GetTermBuffer(console.active_term_buffer_id)
+	if tb == nil {
+		return false
+	}
+	tb.review_line = 0
+	return true
+}
+
 // ---------------------------------------------------------------------------
 // 焦点
 // ---------------------------------------------------------------------------
@@ -629,13 +691,61 @@ GetFocusWindow :: proc() -> mem.Handle {
 }
 
 // ---------------------------------------------------------------------------
-// 枚举
+// 查询
 // ---------------------------------------------------------------------------
 // 统计当前 leaf(window)数量
 WindowCount :: proc() -> int {
 	count := 0
 	countLeaves(WindowTreeRoot(), &count)
 	return count
+}
+
+// 窗口信息快照(派生量按值返回,同 fnt.GetMetrics 的做法;font_name 借用窗口持有的
+// 字符串,窗口销毁即失效 —— 只读展示用)
+WindowInfo :: struct {
+	node : mem.Handle,
+	font_name : string, // 原始字体输入名(font_input)
+	font_size : f32,
+	bold_face : bool, // 有真 Bold 变体(否则渲染合成)
+	italic_face : bool,
+	bi_face : bool,
+	auto_close : bool,
+	has_console : bool,
+	rows, cols : u16,
+	review_line : u32, // 0 = 普通模式
+	split_factor : f32, // 父节点比例(根窗 = 0)
+}
+
+GetWindowInfo :: proc(id : mem.Handle = {}) -> (info : WindowInfo, ok : bool) {
+	node_h := resolveWindow(id)
+	if node_h.id == 0 {
+		return {}, false
+	}
+	node := GetWindowTreeNode(node_h)
+	win := NodeWindow(node_h)
+	if node == nil || win == nil {
+		return {}, false
+	}
+	info.node = node_h
+	info.font_name = win.font_input
+	info.bold_face = win.font_bold.id != 0
+	info.italic_face = win.font_italic.id != 0
+	info.bi_face = win.font_bold_italic.id != 0
+	info.auto_close = win.auto_close
+	if f := fnt.GetFont(win.font_id); f != nil {
+		info.font_size = f.size
+	}
+	if parent := GetWindowTreeNode(node.parent_id); parent != nil {
+		info.split_factor = parent.split_factor
+	}
+	if console := GetConsole(win.console_id); console != nil {
+		info.has_console = true
+		info.rows, info.cols = console.rows, console.cols
+		if tb := GetTermBuffer(console.active_term_buffer_id); tb != nil {
+			info.review_line = tb.review_line
+		}
+	}
+	return info, true
 }
 
 // ---------------------------------------------------------------------------

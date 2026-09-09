@@ -121,7 +121,7 @@
 ### 3.3 userapi 分层(对外接口 vs 内部代码)
 
 - **userapi(`Set<域>`/`Get<域>`/`Reset<域>` 家族)是给用户的接口**:命令栏字符串命令、快捷键绑定、配置段落(main.initWindows = 配置文件立场)直接使用,必须保留。
-- **程序内部代码不得绕 userapi**:内部读写一律 `GetXxx()` 指针直接操作数据;内部调用 userapi 的 Set 系列 = 滥用(例如初始化绑定表应直接写 `GetKeyBindings()` 数据,而非 `SetKeyBinding` 循环)。
+- **程序内部代码不得绕 userapi**:内部读写一律 `GetXxx()` 指针直接操作数据;内部调用 userapi 的 Set 系列 = 滥用(键位/主题/启动/字体等**用户配置一律写在配置文件 `resource/config.dterm`,经指令行生效**,不在代码里循环调 Set 系列)。
 - 唯一例外:main 的 initWindows 类初始化函数(以"配置者"身份调用 userapi,语义 = 用户配置)。
 
 ### 3.4 命名
@@ -265,7 +265,7 @@
 - 每帧分配/释放。
 - 为"以后可能用"加抽象层、虚函数、回调注册。
 - **值拷贝 getter**:把字段逐字段复制成新值返回(`NodeContentTransform` 式);数据获取 = 原指针或句柄解码后直读字段。
-- **内部代码调用 userapi 的 Set 系列**(初始化绑定表用 `SetKeyBinding` 循环之类);内部一律 `GetXxx()` 指针直改;userapi 只给用户/配置段落。
+- **内部代码调用 userapi 的 Set 系列**(在代码里循环调 `SetKeyBinding` 之类);用户配置走配置文件指令行,内部一律 `GetXxx()` 指针直改。
 - **绕过池抽象**:`池.data[句柄.id]` 直索引、手动拼 `Handle{id, generation}`、裸读 `next/pool/generations`——一律经 `Get/GetIndex/GetHandle/Alloc`。
 - **引用不配对**:持有引用不释放、共享借用却按独有释放、越过模块封装直接 `mem.Free` 资源池引用。
 - **源码副本**:`playground/` 下复制 src 模块副本(单真相源被破坏,改一处漏一处);测试 import 真实模块路径。

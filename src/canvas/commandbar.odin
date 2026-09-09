@@ -27,7 +27,7 @@ MAX_COMMAND_EVENTS :: 16
 CommandEvent :: struct {
 	text : [256]u8, // 待执行命令字符串(命令栏提交)
 	len : u8,
-	result : [512]u8, // 执行结果槽(查询类回显,command 写入)
+	result : [4096]u8, // 执行结果槽(查询回显多行 / 失败原因;command 写入)
 	result_len : u16,
 	ok : bool, // 执行成功(命令消费后写)
 	done : bool, // 已执行(结果有效;canvas 读回后移除)
@@ -63,7 +63,8 @@ CommandEventAt :: proc(i : int) -> ^CommandEvent {
 	return &command_events[i]
 }
 
-// 帧尾读回(本模块):已执行事件移除;失败回显日志(M3 起经 result 槽显示)
+// 帧尾读回(本模块):已执行事件移除;查询结果打 stdout,失败打原因(stderr)。
+// (UI 内显示待做:命令栏提交即关闭,结果槽先经 stdout 回显)
 CommandEventsReap :: proc() {
 	i := 0
 	for i < command_event_count {
@@ -73,7 +74,13 @@ CommandEventsReap :: proc() {
 			continue
 		}
 		if !ev.ok {
-			fmt.eprintfln("CMD FAILED: %s", string(ev.text[:ev.len]))
+			if ev.result_len > 0 {
+				fmt.eprintfln("CMD FAILED: %s — %s", string(ev.text[:ev.len]), string(ev.result[:ev.result_len]))
+			} else {
+				fmt.eprintfln("CMD FAILED: %s", string(ev.text[:ev.len]))
+			}
+		} else if ev.result_len > 0 {
+			fmt.print(string(ev.result[:ev.result_len]))
 		}
 		n := command_event_count - 1
 		command_events[i] = command_events[n]

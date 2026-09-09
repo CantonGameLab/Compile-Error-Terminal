@@ -40,6 +40,17 @@ ResetBackgroundShader :: proc() -> bool {
 	return InitBackgroundShader()
 }
 
+// 从文件读源码并编译(命令 bgshader "<path>";缺文件/编译失败 = 保留旧 shader)
+SetBackgroundShaderFile :: proc(path : string) -> bool {
+	data, err := os.read_entire_file_from_path(path, context.allocator)
+	if err != nil {
+		fmt.eprintln("background shader missing:", path)
+		return false
+	}
+	defer delete(data)
+	return SetBackgroundShader(string(data))
+}
+
 // 设置背景 shader 源码(完整 GLSL;编译替换;失败 = 保留旧 shader,返回 false)
 SetBackgroundShader :: proc(src : string) -> bool {
 	prog := compileBgShader(src)

@@ -37,7 +37,7 @@ Page :: struct {
 	title_len : u8,
 	tree_root : mem.Handle, // 本页树根(空叶;页销毁时整树释放)
 	focused : mem.Handle, // 页内焦点(每页记忆,切换即复用,无同步)
-	view_mode : PageMode, // 显示模式;写者 = ToggleSingleMode + DestroyWindow(销毁显示窗自愈回 Tiled)
+	view_mode : PageMode, // 显示模式;写者 = SetSingleMode + DestroyWindow(销毁显示窗自愈回 Tiled)
 }
 
 pages : mem.GenArray(MAX_PAGE_SLOTS, Page)
@@ -158,20 +158,26 @@ PageSwitch :: proc(page_h : mem.Handle) -> bool {
 // ---------------------------------------------------------------------------
 // 显示模式(页属性):Tiled 平铺 / Single 单窗(焦点窗独占树区,树不动)
 // ---------------------------------------------------------------------------
-// userapi 翻转当前页模式;返回翻转后是否 Single。
+// userapi:设置当前页显示模式(on = Single);返回是否生效。
 // 语义:树结构零改动;布局/渲染/鼠标按 有效矩形(WindowEffectiveRect)覆盖解释。
-// 写者 = 本函数(用户开关)+ DestroyWindow(销毁显示中的焦点窗先自动回 Tiled)。
+// 写者 = SetSingleMode(唯一)+ DestroyWindow(销毁显示中的焦点窗先自动回 Tiled)。
+SetSingleMode :: proc(on : bool) -> bool {
+	p := CurrentPage()
+	if p == nil {
+		return false
+	}
+	p.view_mode = on ? .Single : .Tiled
+	return true
+}
+
+// userapi:翻转当前页模式;返回翻转后是否 Single(绑定目标)
 ToggleSingleMode :: proc() -> bool {
 	p := CurrentPage()
 	if p == nil {
 		return false
 	}
-	if p.view_mode == .Single {
-		p.view_mode = .Tiled
-		return false
-	}
-	p.view_mode = .Single
-	return true
+	SetSingleMode(p.view_mode != .Single)
+	return p.view_mode == .Single
 }
 
 PageNext :: proc() -> bool {

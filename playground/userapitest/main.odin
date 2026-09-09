@@ -1,4 +1,4 @@
-﻿// 用户接口测试:CreateWindowTreeRoot / SplitNewWindow / SetFocusWindow / FocusMove
+// 用户接口测试:CreateWindowTreeRoot / SplitNewWindow / SetFocusWindow / FocusMove
 // / SetSplitFactor / ExchangeWindow / SetWindowFont / SetAutoClose / WindowCount / DestroyWindow
 package main
 
@@ -19,6 +19,9 @@ check :: proc(name : string, cond : bool) {
 }
 
 main :: proc() {
+	// 页:CreateWindowTreeRoot 作用于当前页(无当前页 = 返回 0)
+	ua.PageNew()
+
 	// 1. 建根
 	root := ua.CreateWindowTreeRoot()
 	check("根已创建且为焦点", root.id != 0 && ua.GetFocusWindow() == root)
@@ -60,8 +63,10 @@ main :: proc() {
 	r_node := cv.GetWindowTreeNode(right)
 	r_node.window_id = mem.Handle { id = 222, generation = 1 }
 	check("ExchangeWindow right", ua.ExchangeWindow(.Right))
-	check("交换后焦点窗持 222", cv.GetWindowTreeNode(ua.GetFocusWindow()).window_id.id == 222)
-	check("交换后 right 持 111", cv.GetWindowTreeNode(right).window_id.id == 111)
+	// 语义:只换 window_id,焦点跟随"原焦点窗口"(111 现挂在 right 节点)
+	check("交换后焦点 = right", ua.GetFocusWindow() == right)
+	check("交换后 down 窗持 222", cv.GetWindowTreeNode(down_win).window_id.id == 222)
+	check("交换后 right 窗持 111", cv.GetWindowTreeNode(right).window_id.id == 111)
 
 	// 7. SetWindowFont(需要 GL 上下文的 LoadFont 无法在无头测试验证)
 	// 这里只验证失败路径(无效路径返回 false,不崩溃)
@@ -87,13 +92,13 @@ main :: proc() {
 		root_h = cv.GetWindowTreeNode(root_h).parent_id
 	}
 	check("非唯一根不可删", !ua.DestroyWindow(root_h))
-	// 清空剩余窗口(含根)到 0
-	for ua.WindowCount() > 0 {
+	// 清空剩余窗口(含根):最后一个窗口销毁 = 整树重置为空根叶(空叶仍是一个叶节点)
+	for cv.NodeWindow(ua.GetFocusWindow()) != nil {
 		if !ua.DestroyWindow() {
 			break
 		}
 	}
-	check("全部销毁后窗口数 = 0", ua.WindowCount() == 0)
+	check("全部销毁后无窗口对象", cv.NodeWindow(cv.WindowTreeRoot()) == nil)
 
 	fmt.printf("\n%s (%d failures)\n", fails == 0 ? "ALL PASS" : "SOME FAILED", fails)
 }
