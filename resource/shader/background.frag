@@ -39,7 +39,7 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 void main() {
-    /* vec4 base = texture(uBg, vUv);
+    vec4 base = texture(uBg, vUv);
     float t = uTime * 0.35; // 慢速
 
     // 慢速流动坐标(大尺度 domain warp)
@@ -64,7 +64,7 @@ void main() {
     float mix_f = 0.30 + 0.10 * (q.x - 0.5) * 2.0;
     vec3 out_c = mix(base.rgb, tint, clamp(mix_f, 0.0, 1.0)); 
 
-    fragColor = vec4(out_c, base.a); */
+    fragColor = vec4(out_c, base.a);
 
-	fragColor = texture(uBg, vUv);
+	//fragColor = texture(uBg, vUv);
 }

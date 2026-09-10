@@ -25,7 +25,8 @@ main :: proc() {
 	// 配置逐行执行;顺序由配置自己负责(需要窗格的命令写在 page-new 之后)。
 	command.LoadConfig()
 	if canvas.PageCount() == 0 {
-		canvas.PageNew() // 配置未建页:保底建第一页(空窗格,无默认启动)
+		
+		fmt.println("Bro you should at least create ONE page to start! So now we can't help you anymore")
 	}
 
 	//MAIN LOOP标准循环

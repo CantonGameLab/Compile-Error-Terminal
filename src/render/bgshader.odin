@@ -28,7 +28,7 @@ bg_tex_w, bg_tex_h : u32
 InitBackgroundShader :: proc() -> bool {
 	data, err := os.read_entire_file_from_path(BG_SHADER_PATH, context.allocator)
 	if err != nil {
-		fmt.eprintln("background shader missing:", BG_SHADER_PATH)
+		fmt.eprintln("we can't find a correct background shader in given path! so YOU should handle it! it is not MY job to deal with that!", BG_SHADER_PATH)
 		return false
 	}
 	defer delete(data)
@@ -44,7 +44,7 @@ ResetBackgroundShader :: proc() -> bool {
 SetBackgroundShaderFile :: proc(path : string) -> bool {
 	data, err := os.read_entire_file_from_path(path, context.allocator)
 	if err != nil {
-		fmt.eprintln("background shader missing:", path)
+		fmt.eprintln("we can't find a correct background shader in given path maybe again!! so YOU should handle it! it is not MY job to deal with that! ", path)
 		return false
 	}
 	defer delete(data)
@@ -55,7 +55,7 @@ SetBackgroundShaderFile :: proc(path : string) -> bool {
 SetBackgroundShader :: proc(src : string) -> bool {
 	prog := compileBgShader(src)
 	if prog == 0 {
-		fmt.eprintln("background shader compile failed; keeping previous")
+		fmt.eprintln("You see, the shader can't pass the GL compilor. We have NO choice but to report this fucking error.")
 		return false
 	}
 	if bg_program != 0 {

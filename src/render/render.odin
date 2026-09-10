@@ -33,7 +33,7 @@ u_screen_size : i32
 loadShader :: proc(path : string, kind : u32) -> u32 {
 	data, err := os.read_entire_file_from_path(path, context.allocator)
 	if err != nil {
-		fmt.eprintln("shader file missing:", path)
+		fmt.eprintln("AGAIN! we can't find a correct background shader in given path! so YOU should handle it! it is not MY job to deal with that!", path)
 		return 0
 	}
 	defer delete(data)
@@ -65,7 +65,7 @@ vao, vbo : u32
 
 Init :: proc() -> bool {
 	if !s3.Init({.VIDEO}) {
-		fmt.eprintln("SDL3 Init Failed:", s3.GetError())
+		fmt.eprintln("SDL3 init failed. Guess what? I won't serve you anymore! GO using other terminal emulator such as the WINDOW TERMINAL. This is who specially prepared for users like YOU.", s3.GetError())
 		return false
 	}
 	window = s3.CreateWindow(
@@ -75,7 +75,7 @@ Init :: proc() -> bool {
 		s3.WINDOW_OPENGL | s3.WINDOW_RESIZABLE
 	)
 	if window == nil {
-		fmt.eprintln("CreateWindow Failed:", s3.GetError())
+		fmt.eprintln("FAILED FAILED and FAILED. You can't just create A window! Congratulations!", s3.GetError())
 		return false
 	}
 
@@ -88,11 +88,11 @@ Init :: proc() -> bool {
 
 	gl_context = s3.GL_CreateContext(window)
 	if gl_context == nil {
-		fmt.eprintln("Create GL Context Failed:", s3.GetError())
+		fmt.eprintln("The Khronos say: You don's even deserve to have an available GL_Context.", s3.GetError())
 		return false
 	}
 	if !s3.GL_MakeCurrent(window, gl_context) {
-		fmt.eprintln("绑定GL上下文失败:", s3.GetError())
+		fmt.eprintln("The Khronos say: Even if you have a GL_Context, you don't deserve to bind it.", s3.GetError())
 		return false
 	}
 
@@ -361,7 +361,7 @@ compileShader :: proc(kind : u32, src : cstring) -> u32 {
 	if status == 0 {
 		buf : [2048]byte
 		gl.GetShaderInfoLog(shader, i32(len(buf)), nil, &buf[0])
-		fmt.eprintln("shader compile failed:", string(buf[:]))
+		fmt.eprintln("the fucking shader CAN'T be converted by the GL compilor into a bunch of shit bytecode that can be executed by the GPU(maybe a erotic RTX5090 just like a stunner of G cup and smooth pussy)", string(buf[:]))
 		gl.DeleteShader(shader)
 		return 0
 	}
@@ -378,7 +378,7 @@ linkProgram :: proc(vs, fs : u32) -> u32 {
 	if status == 0 {
 		buf : [2048]byte
 		gl.GetProgramInfoLog(program, i32(len(buf)), nil, &buf[0])
-		fmt.eprintln("program link failed:", string(buf[:]))
+		fmt.eprintln("FAILED to link the program and you should pick up your phone to CALL THE khronos and ask him WHY?", string(buf[:]))
 		gl.DeleteProgram(program)
 		return 0
 	}
