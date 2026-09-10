@@ -18,7 +18,7 @@ theme tango-dark
 # theme-set "mine" ansi3 "#C4A000"     # ansi0..ansi15
 # theme-set "mine" tab_active_bg "#101014"
 # theme mine
-default-launch "bash" "FiraCode Nerd Font Mono" 26
+default-launch "bash" "Hack Nerd Font" 26
 vsync on
 borderless off
 bgshader
