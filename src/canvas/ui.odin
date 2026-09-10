@@ -19,7 +19,7 @@ ui_font_default_done : bool // 默认字体已尝试(失败不再每帧重试)
 SetUIFont :: proc(path : string, size : f32) -> bool {
 	new_font, ok := fnt.LoadFont(path, size)
 	if !ok {
-		fmt.eprintln("SetUIFont: LoadFont failed:", path, size)
+		fmt.eprintln("Windows Terminal ships its own font so it never has to have this conversation. You nominated THIS as your entire UI font and it wouldn't even load:", path, size)
 		return false
 	}
 	if ui_font.id != 0 {

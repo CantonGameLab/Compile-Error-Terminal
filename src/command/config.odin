@@ -43,7 +43,7 @@ LoadConfig :: proc() -> (stats : ConfigStats) {
 		}
 	}
 	if data == nil {
-		fmt.eprintln("config: 无配置文件(用户配置与", CONFIG_FALLBACK, "都不存在)")
+		fmt.eprintln("config: no config file, no fallback at", CONFIG_FALLBACK, ". Alacritty would have handed you 300 lines of TOML; its build would have handed you 400 crates. You get nothing. F2 won't save you.")
 		return
 	}
 	defer delete(data)
@@ -51,7 +51,7 @@ LoadConfig :: proc() -> (stats : ConfigStats) {
 	stats.loaded = true
 	configRunText(string(data), path, &stats)
 	if GetKeyBindings().count == 0 {
-		fmt.eprintln("config: 没有任何键位绑定(bind 行缺失;F2 命令栏不可用)")
+		fmt.eprintln("config: parsed clean and found ZERO bind lines. Not one key tied down. You built a terminal and forgot the rope. F2 command bar is dead.")
 	}
 	return
 }
@@ -81,7 +81,7 @@ configRunText :: proc(text, path : string, stats : ^ConfigStats) {
 			if err == "" {
 				err = "执行失败" // 语法通过但动作返回 false(环境/状态不满足)
 			}
-			fmt.eprintfln("config %s:%d: %s", path, line_no, err)
+			fmt.eprintfln("config %s:%d shat itself: %s. Alacritty rewrites its config format every other release and never apologizes; I at least give you a line number.", path, line_no, err)
 			stats.failed += 1
 			continue
 		}
@@ -93,13 +93,13 @@ configRunText :: proc(text, path : string, stats : ^ConfigStats) {
 // 返回 false = 读失败或其中任一行失败(错误已逐行报出)。
 configLoadFile :: proc(target : string) -> bool {
 	if config_depth >= CONFIG_DEPTH_MAX {
-		fmt.eprintln("config: load 嵌套过深:", target)
+		fmt.eprintln("config: load inside load inside load... eight levels deep and not one of them adds anything. That's a Java class hierarchy with better error messages. Recursion is not a personality:", target)
 		return false
 	}
 	full := configResolve(target, config_dir)
 	data, err := os.read_entire_file_from_path(full, context.allocator)
 	if err != nil {
-		fmt.eprintln("config: 无法读取:", full)
+		fmt.eprintln("config: couldn't open it. An enterprise framework would have raised a ConfigurationSourceProviderException for this. I'm giving you the path instead:", full)
 		return false
 	}
 	defer delete(data)

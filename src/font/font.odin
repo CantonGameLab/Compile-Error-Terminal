@@ -749,7 +749,7 @@ LoadFont :: proc(path_or_name : string, size : f32, antialias : u8 = 1, quiet :=
 	face, fok := faceLoad(path, size)
 	if !fok {
 		if !quiet {
-			fmt.eprintln("LoadFont: faceLoad failed:", path, size)
+			fmt.eprintln("faceLoad() opened your font and found a body. kitty would have fallen back through six fonts, shaped ligatures out of thin air and felt smug about it. You typed the path wrong:", path, size)
 		}
 		delete(font.slots)
 		if path_alloc {
@@ -803,7 +803,7 @@ LoadFont :: proc(path_or_name : string, size : f32, antialias : u8 = 1, quiet :=
 	h = mem.RcAlloc(&fonts, font)
 	if h.id == 0 {
 		if !quiet {
-			fmt.eprintln("LoadFont: font table full (all refs held):", path, size)
+			fmt.eprintln("Font table's full. A garbage collector would have freed something by now — the wrong thing, at the worst possible moment, after a 200ms pause — but something. Take it home:", path, size)
 		}
 		fontFree(&font)
 		return {}, false

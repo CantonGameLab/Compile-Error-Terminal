@@ -62,7 +62,7 @@ createConptyContextValue :: proc(size: win.COORD, cmd: string) -> (ctx: ConptyCo
 
 	hpc, hr := createPseudoConsole(size, conpty_side_read, conpty_side_write, 0)
 	if hr != win.HRESULT(0) {
-		fmt.eprintln("CreatePseudoConsole Failed")
+		fmt.eprintfln("CreatePseudoConsole returned 0x%X. Windows Terminal calls this same function all day and never whines — it saves the whining for the 1757 open issues on its tracker. This one is yours.", transmute(u32) hr)
 		win.CloseHandle(main_side_write)
 		win.CloseHandle(main_side_read)
 		return
@@ -149,7 +149,7 @@ createConptyContextValue :: proc(size: win.COORD, cmd: string) -> (ctx: ConptyCo
 
 	if !ok_create {
 		err := win.GetLastError()
-		fmt.eprintfln("CreateProcessW Failed: %v", err)
+		fmt.eprintfln("CreateProcessW failed: %v. I tried to make a shell and shot blanks. Check your command before you question my fertility.", err)
 		destroyConptyContext(&ctx)
 		DeleteProcThreadAttributeList(start_info.lpAttributeList)
 		win.HeapFree(heap, 0, start_info.lpAttributeList)

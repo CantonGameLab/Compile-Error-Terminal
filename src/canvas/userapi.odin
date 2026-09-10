@@ -70,7 +70,7 @@ applyDefaultLaunch :: proc(node_h : mem.Handle) {
 	}
 	if d.cmd != "" {
 		if !LaunchConsole(d.cmd, node_h) {
-			fmt.eprintln("default launch failed:", d.cmd)
+			fmt.eprintln("Your default launch didn't. Alacritty users write this in TOML and it works first try, after the compiler spends 90 seconds thinking about it. Look at your command and feel something:", d.cmd)
 		}
 	}
 }
@@ -317,17 +317,17 @@ SetConsoleFont :: proc(path : string, size : f32, id : mem.Handle = {}) -> bool 
 	}
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
-		fmt.eprintln("SCF: no node")
+		fmt.eprintln("SCF: that handle points at nothing. You're dressing a mannequin that was never shipped.")
 		return false
 	}
 	console := ensureConsole(node_h)
 	if console == nil {
-		fmt.eprintln("SCF: no console")
+		fmt.eprintln("SCF: the node's real, but there's no console in it. You knocked on a door that was painted on.")
 		return false
 	}
 	new_font, ok := fnt.LoadFont(path, size)
 	if !ok {
-		fmt.eprintln("SCF: LoadFont failed:", path, size)
+		fmt.eprintln("SCF: LoadFont choked on it. kitty would have quietly picked six fallbacks and shaped around your mistake. Wrong path, wrong size, or a file that lies about being a font:", path, size)
 		return false
 	}
 	// 入参可能是本 console 旧 font_input(字号重载 = 自引用调用):先独立持有一份,
@@ -379,12 +379,12 @@ AdjustConsoleFontSize :: proc(delta : f32, id : mem.Handle = {}) -> bool {
 ClearConsoleSession :: proc(id : mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
-		fmt.eprintln("CCS: no node")
+		fmt.eprintln("CCS: no such node. Wiping a session off a thing that never existed is a very specific kind of denial.")
 		return false
 	}
 	console_h := NodeConsoleId(node_h)
 	if console_h.id == 0 {
-		fmt.eprintln("CCS: no console")
+		fmt.eprintln("CCS: that node never had a console. You cleared nothing and you feel lighter, don't you? That's the scary part.")
 		return false
 	}
 	return consoleClearSession(console_h)
@@ -400,7 +400,7 @@ ClearConsoleSession :: proc(id : mem.Handle = {}) -> bool {
 LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
-		fmt.eprintln("LC: no node")
+		fmt.eprintln("LC: can't launch into a node that isn't there. Go be real somewhere else, then come back.")
 		return false
 	}
 	console_h := NodeConsoleId(node_h)
@@ -414,12 +414,12 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 	if console != nil && console.conpty_handle.id != 0 {
 		_, new_h, ok := TreeNodeSplit(node_h, .LeftRight, 0.5)
 		if !ok {
-			fmt.eprintln("LC: split failed")
+			fmt.eprintln("LC: tried to split your pane to make room and the tree shut its legs. Even your data structure is done with you.")
 			return false
 		}
 		new_console := ensureConsole(new_h)
 		if new_console == nil {
-			fmt.eprintln("LC: no console (new)")
+			fmt.eprintln("LC: split worked and the new pane came out hollow. You built an extra room and forgot the floor.")
 			return false
 		}
 		inheritConsoleFontSet(new_console, console) // 继承完整字体集;引用 ×4
@@ -427,23 +427,23 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 		node_h, console_h, console = new_h, NodeConsoleId(new_h), new_console
 	}
 	if console == nil || fnt.GetFont(console.font_id) == nil {
-		fmt.eprintln("LC: no font")
+		fmt.eprintln("LC: no font -> no cell size -> no console. Alacritty would have silently used a fallback font and let you be wrong. SetConsoleFont first, genius.")
 		return false // 未设置字体,先 SetConsoleFont
 	}
 	conpty_h, ok := ct.CreateConptyContext({80, 24}, cmd)
 	if !ok {
-		fmt.eprintln("LC: CreateConptyContext failed:", cmd)
+		fmt.eprintln("LC: CreateConptyContext died before foreplay. Your command is wrong, cursed, or both:", cmd)
 		return false
 	}
 	if !ct.StartReadThread(conpty_h) {
-		fmt.eprintln("LC: StartReadThread failed:", cmd)
+		fmt.eprintln("LC: pty is up, read thread won't start. You built a mouth and forgot the ears. Useless:", cmd)
 		ct.DestroyConpty(conpty_h)
 		return false
 	}
 	// console 已存在(字体集在内):就地绑会话;不存在则新建
 	if console_h.id != 0 {
 		if !consoleStartSession(console_h, conpty_h, 24, 80) {
-			fmt.eprintln("LC: start session failed:", cmd)
+			fmt.eprintln("LC: the pty was already in and the session still wouldn't start. Performance issues. I'm pulling out — you get nothing:", cmd)
 			ct.StopReadThread(conpty_h)
 			ct.DestroyConpty(conpty_h)
 			return false
@@ -451,7 +451,7 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 	} else {
 		new_h, cok := CreateConsole(24, 80, conpty_h)
 		if !cok {
-			fmt.eprintln("LC: CreateConsole failed:", cmd)
+			fmt.eprintln("LC: couldn't create the console itself. kitty does consoles, images and a scripting language, and it's one guy. You have a pty, a font, and nowhere to put them:", cmd)
 			ct.StopReadThread(conpty_h)
 			ct.DestroyConpty(conpty_h)
 			return false

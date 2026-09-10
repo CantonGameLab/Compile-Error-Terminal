@@ -13,12 +13,12 @@ import "core:fmt"
 
 main :: proc() {
 	if !render.Init() {
-		fmt.eprintln("render init failed")
+		fmt.eprintln("render init failed. OpenGL 4.4 in 2026, because Khronos would rather maintain a 2013 spec than admit Vulkan won. No window, no GL, no point. Alacritty renders this fine — in Rust, with 400 crates, and still no tabs.")
 		return
 	}
 	defer render.Quit()
 	if !input.Init(render.GetWindow()) {
-		fmt.eprintln("input init failed")
+		fmt.eprintln("input init failed. SDL3 renamed half its API and still can't say why the keyboard doesn't work. Thanks, Sam. A JIT runtime would have warmed up for three seconds before failing this slowly.")
 		return
 	}
 

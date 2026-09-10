@@ -14,7 +14,7 @@ import "core:fmt"
 Update :: proc() -> bool {
 	ConsoleUpdateTree(WindowTreeRoot()) // 更新 WindowTree 的 layout + 消费输出
 	if !PollSessions() {
-		fmt.println("all sessions ended")
+		fmt.println("all sessions ended. Nothing left to draw. A garbage collector would have stop-the-world'd for 200ms and then collected the wrong session anyway. Post-nut clarity, terminal edition — I'll show myself out.")
 		return false
 	}
 

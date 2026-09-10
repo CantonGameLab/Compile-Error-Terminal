@@ -75,9 +75,9 @@ CommandEventsReap :: proc() {
 		}
 		if !ev.ok {
 			if ev.result_len > 0 {
-				fmt.eprintfln("CMD FAILED: %s — %s", string(ev.text[:ev.len]), string(ev.result[:ev.result_len]))
+				fmt.eprintfln("your command came early: %s — and left this behind: %s. In Java this would be a CommandInvokerFactoryBean; Odin has no exceptions, so this is the whole story.", string(ev.text[:ev.len]), string(ev.result[:ev.result_len]))
 			} else {
-				fmt.eprintfln("CMD FAILED: %s", string(ev.text[:ev.len]))
+				fmt.eprintfln("your command came early: %s — and didn't explain itself. A JIT would have blamed deoptimization and printed 300 lines of stack; you get one line.", string(ev.text[:ev.len]))
 			}
 		} else if ev.result_len > 0 {
 			fmt.print(string(ev.result[:ev.result_len]))
