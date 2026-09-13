@@ -145,6 +145,33 @@ GetWindow :: proc() -> ^s3.Window {
 }
 
 // ---------------------------------------------------------------------------
+// 窗口标题:OS 标题栏 = 焦点 console 的应用标题(OSC 0/2);空则回落页标题。
+// tabbar 仍显示 Page.title —— 用户命名与应用命名各归各位。仅变化时落 SDL。
+// ---------------------------------------------------------------------------
+WINDOW_TITLE_MAX :: 192
+
+window_title : [WINDOW_TITLE_MAX + 1]u8
+window_title_len : int
+
+SyncWindowTitle :: proc(app_title, page_title : string) {
+	if window == nil {
+		return
+	}
+	t := app_title
+	if len(t) == 0 {
+		t = page_title
+	}
+	n := min(len(t), WINDOW_TITLE_MAX)
+	if n == window_title_len && string(window_title[:n]) == string(window_title[:window_title_len]) {
+		return // 未变化:不打扰 SDL
+	}
+	copy(window_title[:n], t[:n])
+	window_title[n] = 0
+	window_title_len = n
+	s3.SetWindowTitle(window, cstring(&window_title[0]))
+}
+
+// ---------------------------------------------------------------------------
 // 无边框(去系统标题栏/边框):渲染内容不变,仅窗口装饰变化。
 // 无边框后窗口无法用标题栏拖动/边缘缩放(后续需要再加 F11 全屏或自绘拖拽)。
 // ---------------------------------------------------------------------------

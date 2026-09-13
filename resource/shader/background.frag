@@ -39,32 +39,32 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 void main() {
-    vec4 base = texture(uBg, vUv);
-    float t = uTime * 0.35; // 慢速
+    // vec4 base = texture(uBg, vUv);
+    // float t = uTime * 0.35; // 慢速
 
-    // 慢速流动坐标(大尺度 domain warp)
-    vec2 p = vUv * 2.5;
-    vec2 q = vec2(
-        noise(p + vec2(0.0, t)),
-        noise(p + vec2(5.2, 1.3) - t * 0.55)
-    );
-    vec2 r = vec2(
-        noise(p + 3.0 * q + vec2(1.7, 9.2)),
-        noise(p + 3.0 * q + vec2(8.3, 2.8))
-    );
+    // // 慢速流动坐标(大尺度 domain warp)
+    // vec2 p = vUv * 2.5;
+    // vec2 q = vec2(
+    //     noise(p + vec2(0.0, t)),
+    //     noise(p + vec2(5.2, 1.3) - t * 0.55)
+    // );
+    // vec2 r = vec2(
+    //     noise(p + 3.0 * q + vec2(1.7, 9.2)),
+    //     noise(p + 3.0 * q + vec2(8.3, 2.8))
+    // );
 
-    // 单色源:底色色相为基础,小幅漂移 + 亮度呼吸(低饱和维持)
-    vec3 hsv = rgb2hsv(base.rgb);
-    float hue = hsv.x + (r.x - 0.5) * 0.22;                 // ±~40°
-    float sat = hsv.y * 0.85 + 0.15;                        // 低饱和基调
-    float val = hsv.z * (0.95 + 0.10 * (r.y - 0.5) * 2.0);  // 亮度 ±10% 呼吸
-    vec3 tint = hsv2rgb(vec3(fract(hue), sat, val));
+    // // 单色源:底色色相为基础,小幅漂移 + 亮度呼吸(低饱和维持)
+    // vec3 hsv = rgb2hsv(base.rgb);
+    // float hue = hsv.x + (r.x - 0.5) * 0.22;                 // ±~40°
+    // float sat = hsv.y * 0.85 + 0.15;                        // 低饱和基调
+    // float val = hsv.z * (0.95 + 0.10 * (r.y - 0.5) * 2.0);  // 亮度 ±10% 呼吸
+    // vec3 tint = hsv2rgb(vec3(fract(hue), sat, val));
 
-    // 柔和注入:主体 = 底色,注入率随流动缓慢呼吸(0.2..0.4)
-    float mix_f = 0.30 + 0.10 * (q.x - 0.5) * 2.0;
-    vec3 out_c = mix(base.rgb, tint, clamp(mix_f, 0.0, 1.0)); 
+    // // 柔和注入:主体 = 底色,注入率随流动缓慢呼吸(0.2..0.4)
+    // float mix_f = 0.30 + 0.10 * (q.x - 0.5) * 2.0;
+    // vec3 out_c = mix(base.rgb, tint, clamp(mix_f, 0.0, 1.0)); 
 
-    fragColor = vec4(out_c, base.a);
+    // fragColor = vec4(out_c, base.a);
 
-	//fragColor = texture(uBg, vUv);
+	fragColor = texture(uBg, vUv);
 }

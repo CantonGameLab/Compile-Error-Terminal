@@ -5,7 +5,10 @@ package canvas
 import ct "../conpty"
 import inp "../input"
 import mem "../memory"
+import "core:encoding/base64"
 import "core:fmt"
+import "core:os"
+import "core:strings"
 
 // VT 解析:vtparse 状态机(字节流 → 动作回调),回调操作 Console。
 // 每帧 UpdateConsole(id) 拉取 ConPTY 输出喂给解析器;VtState 嵌在 Console.vt。
@@ -88,27 +91,41 @@ vtParserCallback :: proc(p : ^Parser, action : Action, ch : rune) {
 		vtCsiDispatch(console_h, p, u8(ch))
 	case .OscStart:
 		osc_len = 0
+		osc_bad = false
 	case .OscPut:
 		oscDataAppend(ch)
 	case .OscEnd:
-		oscDispatch(console_h)
+		if osc_bad {
+			osc_bad = false // 超长段整段作废(osc_len 由下次 OscStart 重置)
+		} else {
+			oscDispatch(console_h)
+		}
 	case .Hook, .Put, .Unhook:
 		// DCS 暂不处理
 	}
 }
 
 // ---------------------------------------------------------------------------
-// OSC(字符串收集 → 语义):当前处理 52(写剪贴板);其余忽略。
-// 包级缓冲(主循环单线程);超长 OSC 截断。
+// OSC(字符串收集 → 语义):0/1/2 标题、7 当前目录、52 剪贴板;其余忽略。
+// 包级缓冲(主循环单线程);超长 = 整段丢弃(绝不执行被截断的序列)。
+// 应用侧状态落 Console.app_title / Console.cwd(console.odin);应答经 oscReply 写回。
 // ---------------------------------------------------------------------------
 OSC_BUFFER :: 4096
 
+APP_TITLE_MAX :: 128 // 应用标题上限(展示用;避免 clone 长串)
+CWD_MAX :: 512       // 工作目录上限
+
 osc_data : [OSC_BUFFER]u8
 osc_len : int
+osc_bad : bool // 本段超长:dispatch 时整段丢弃
 base64_scratch : [OSC_BUFFER]u8
 
 oscDataAppend :: proc(cp : rune) {
+	if osc_bad {
+		return
+	}
 	if osc_len + 4 > OSC_BUFFER {
+		osc_bad = true // 截断后照常执行 = 执行了另一条序列,故整段作废
 		return
 	}
 	osc_len += runeToUtf8(cp, osc_data[osc_len:])
@@ -138,31 +155,207 @@ runeToUtf8 :: proc(cp : rune, buf : []u8) -> int {
 	}
 }
 
+// OSC 调试:odin build src/ -define:osc_debug=true 时打印每个收到的 OSC 原文
+// (诊断"序列到没到 parser";默认关闭,编译期消除)
+OSC_DEBUG :: #config(osc_debug, false)
+
 oscDispatch :: proc(console_h : mem.Handle) {
 	s := osc_data[:osc_len]
 	if len(s) == 0 {
 		return
 	}
-	num := 0
+	when OSC_DEBUG {
+		p := s
+		if len(p) > 120 {
+			p = p[:120]
+		}
+		line := fmt.tprintf("OSCDBG len=%d raw=[%s]\n", len(s), string(p))
+		fmt.eprint(line)
+		// 同时落文件:双击启动(无 stderr)时也能查
+		if fh, ferr := os.open("osc_debug.log", os.O_APPEND | os.O_CREATE | os.O_WRONLY); ferr == nil {
+			_, _ = os.write_string(fh, line)
+			os.close(fh)
+		}
+	}
+	num, payload, ok := oscParseHead(s)
+	if !ok {
+		return // 无类型号/无内容
+	}
+	switch num {
+	case 0, 2: // 标题(0 = 图标名 + 标题,2 = 窗口标题):应用标题
+		oscSetAppTitle(console_h, payload)
+	case 1: // 图标名:无图标概念,忽略
+	case 7: // 当前工作目录:file://[host]/path → 记在本会话名下
+		oscSetCwd(console_h, payload)
+	case 52: // 剪贴板:52;[c|p|s0..s7];<base64 | ?>
+		oscClipboard(console_h, payload)
+	}
+}
+
+// 头部:十进制号 + ';'(无号/无分号 = 非法,忽略)
+oscParseHead :: proc(s : []byte) -> (num : int, payload : []byte, ok : bool) {
 	n := 0
 	for n < len(s) && s[n] >= '0' && s[n] <= '9' {
 		num = num * 10 + int(s[n] - '0')
 		n += 1
 	}
 	if n == 0 || n >= len(s) || s[n] != ';' {
-		return // 无类型号/无内容
+		return 0, nil, false
 	}
-	payload := s[n + 1:]
-	switch num {
-	case 52: // 剪贴板:52;[c|s|p];base64(选择器可缺省)
-		if p := indexByte(payload, ';'); p >= 0 {
-			payload = payload[p + 1:]
-		}
-		if text, ok := base64Decode(payload); ok {
-			inp.SetClipboardText(text)
-		}
-	case 0, 1, 2, 8: // 标题/超链接:暂无消费
+	return num, s[n + 1:], true
+}
+
+// OSC 0/2:应用标题(clone 进 console;空串 = 清除)。OS 窗口标题显示它,
+// tabbar 仍显示 Page.title —— 用户命名与应用命名互不覆盖。
+oscSetAppTitle :: proc(console_h : mem.Handle, text : []byte) {
+	console := GetConsole(console_h)
+	if console == nil {
+		return
 	}
+	if console.app_title != "" {
+		delete(console.app_title)
+		console.app_title = ""
+	}
+	n := min(len(text), APP_TITLE_MAX)
+	if n > 0 {
+		console.app_title = strings.clone(string(text[:n]))
+	}
+}
+
+// OSC 7:file://[host]/<path>。非 file:// 前缀忽略(程序乱发常见);host 段跳过;
+// 百分号解码 → 记在该会话名下(shell 每个提示符都上报,写全局会被互相覆盖)。
+oscSetCwd :: proc(console_h : mem.Handle, payload : []byte) {
+	prefix := "file://"
+	if len(payload) <= len(prefix) {
+		return
+	}
+	for i in 0 ..< len(prefix) {
+		if payload[i] != prefix[i] {
+			return
+		}
+	}
+	slash := -1 // host 段结束位置 = 路径起点
+	for i := len(prefix); i < len(payload); i += 1 {
+		if payload[i] == '/' {
+			slash = i
+			break
+		}
+	}
+	if slash < 0 {
+		return
+	}
+	buf : [CWD_MAX]u8
+	n := percentDecode(payload[slash:], buf[:])
+	if n == 0 {
+		return
+	}
+	SetConsoleCwd(console_h, string(buf[:n]))
+}
+
+// 工作目录形态归一(消费端 = CreateProcess 的 lpCurrentDirectory):
+// file:// URL 的路径段前导 '/' 去掉(/C:/x → C:\x);msys2 的 /c/Users/x → C:\Users\x;
+// 已带盘符的只统一分隔符;其余原样。
+cwdNormalize :: proc(cwd : string, out : []u8) -> int {
+	n, i := 0, 0
+	if len(cwd) > 0 && cwd[0] == '/' {
+		i = 1 // URL 路径段的前导 '/'
+	}
+	if i + 1 < len(cwd) && cwd[i + 1] == '/' &&
+	   ((cwd[i] >= 'a' && cwd[i] <= 'z') || (cwd[i] >= 'A' && cwd[i] <= 'Z')) {
+		out[0] = cwd[i] - 32 // 小写盘符 → 大写
+		out[1] = ':'
+		out[2] = '\\'
+		n, i = 3, i + 2
+	}
+	for ; i < len(cwd) && n < len(out); i += 1 {
+		c := cwd[i]
+		if c == '/' {
+			c = '\\'
+		}
+		out[n] = c
+		n += 1
+	}
+	return n
+}
+
+// 百分号解码(%XX → 字节;非法序列原样保留)
+percentDecode :: proc(src : []byte, dst : []byte) -> int {
+	n, i := 0, 0
+	for i < len(src) && n < len(dst) {
+		if src[i] == '%' && i + 2 < len(src) {
+			hi, lo := hexVal(src[i + 1]), hexVal(src[i + 2])
+			if hi >= 0 && lo >= 0 {
+				dst[n] = u8(hi << 4 | lo)
+				n += 1
+				i += 3
+				continue
+			}
+		}
+		dst[n] = src[i]
+		n += 1
+		i += 1
+	}
+	return n
+}
+
+hexVal :: proc(c : u8) -> int {
+	switch {
+	case c >= '0' && c <= '9': return int(c - '0')
+	case c >= 'a' && c <= 'f': return int(c - 'a') + 10
+	case c >= 'A' && c <= 'F': return int(c - 'A') + 10
+	}
+	return -1
+}
+
+// OSC 52:52;<selector>;<base64 | ?>。selector 缺省 = 剪贴板;Windows 无主选区,
+// c/p/s0-s7 一律落系统剪贴板;'?' = 查询当前内容(应答)。
+oscClipboard :: proc(console_h : mem.Handle, payload : []byte) {
+	data := payload
+	if p := indexByte(payload, ';'); p >= 0 {
+		data = payload[p + 1:] // 选择器段丢弃(无独立存储)
+	}
+	if len(data) == 1 && data[0] == '?' {
+		oscReplyClipboard(console_h)
+		return
+	}
+	if text, ok := base64Decode(data); ok {
+		inp.SetClipboardText(text)
+	}
+}
+
+// 应答 52;c;<base64>(空剪贴板 = 空数据段;超长按 4 字节边界截断以保 base64 合法)
+oscReplyClipboard :: proc(console_h : mem.Handle) {
+	text := inp.GetClipboardText()
+	if len(text) == 0 {
+		oscReply(console_h, "52;c;")
+		return
+	}
+	enc, err := base64.encode(transmute([]byte)text)
+	if err != nil {
+		return
+	}
+	defer delete(enc)
+	max_enc := OSC_BUFFER - 32
+	s := enc
+	if len(s) > max_enc {
+		s = s[:max_enc & ~int(3)]
+	}
+	oscReply(console_h, fmt.tprintf("52;c;%s", s))
+}
+
+// OSC 应答统一出口:ESC ] <msg> ESC \(与图形协议应答风格一致;BEL 仅在接收侧兼容)
+oscReply :: proc(console_h : mem.Handle, msg : string) {
+	console := GetConsole(console_h)
+	if console == nil || console.conpty_handle.id == 0 {
+		return
+	}
+	buf : [OSC_BUFFER]u8
+	k := 0
+	n := min(len(msg), OSC_BUFFER - 8)
+	k += copy(buf[k:], "\x1b]")
+	k += copy(buf[k:], msg[:n])
+	k += copy(buf[k:], "\x1b\\")
+	ct.WriteConptyInput(console.conpty_handle, buf[:k])
 }
 
 indexByte :: proc(s : []byte, b : u8) -> int {

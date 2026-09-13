@@ -23,8 +23,8 @@ MAX_CONPTY_SLOTS :: 32
 
 conpty_contexts : mem.GenArray(MAX_CONPTY_SLOTS, ConptyContext)
 
-CreateConptyContext :: proc(size : win.COORD, cmd : string) -> (h : mem.Handle, ok : bool) {
-	ctx, created := createConptyContextValue(size, cmd)
+CreateConptyContext :: proc(size : win.COORD, cmd : string, cwd : string = "") -> (h : mem.Handle, ok : bool) {
+	ctx, created := createConptyContextValue(size, cmd, cwd)
 	if !created {
 		return {}, false
 	}
@@ -40,7 +40,7 @@ GetConptyContext :: proc(h : mem.Handle) -> ^ConptyContext {
 	return mem.Get(&conpty_contexts, h)
 }
 
-createConptyContextValue :: proc(size: win.COORD, cmd: string) -> (ctx: ConptyContext, ok: bool = false) {
+createConptyContextValue :: proc(size: win.COORD, cmd: string, cwd: string) -> (ctx: ConptyContext, ok: bool = false) {
 	conpty_side_read : win.HANDLE // ConPTY 端读(子进程键盘事件)
 	main_side_write  : win.HANDLE // 我们写键盘输入
 	main_side_read   : win.HANDLE // 我们读输出
@@ -113,6 +113,13 @@ createConptyContextValue :: proc(size: win.COORD, cmd: string) -> (ctx: ConptyCo
 
 	cmd_wide := win.utf8_to_wstring(cmd)
 
+	// 工作目录:来源 console 的 OSC 7 报告值(空 = 继承当前目录,保持旧行为)
+	cwd_buf : [520]u16
+	cwd_ptr : win.LPCWSTR
+	if len(cwd) > 0 {
+		cwd_ptr = win.utf8_to_wstring_buf(cwd_buf[:], cwd)
+	}
+
 	// Job Object:容纳整个进程树(含孙进程),KILL_ON_JOB_CLOSE 保证
 	// 我们关闭 Job 句柄时树内所有进程被终止(避免 opencode 退出后残留 node 子进程
 	// 让 conhost 认为还有连接,读管道永不关闭 → 界面冻结)
@@ -135,10 +142,27 @@ createConptyContextValue :: proc(size: win.COORD, cmd: string) -> (ctx: ConptyCo
 		false,
 		win.EXTENDED_STARTUPINFO_PRESENT,
 		nil,
-		nil,
+		cwd_ptr,
 		&start_info.StartupInfo,
 		&ctx.proc_info,
 	)
+	// 工作目录失效(目录被删/路径已不存在):回退为继承当前目录 ——
+	// 不能让一条过期的 OSC 7 把整个会话变成起不来
+	if !ok_create && cwd_ptr != nil {
+		ctx.proc_info = {}
+		ok_create = win.CreateProcessW(
+			nil,
+			cmd_wide,
+			nil,
+			nil,
+			false,
+			win.EXTENDED_STARTUPINFO_PRESENT,
+			nil,
+			nil,
+			&start_info.StartupInfo,
+			&ctx.proc_info,
+		)
+	}
 
 	// 恢复父进程环境
 	if had_colorterm {

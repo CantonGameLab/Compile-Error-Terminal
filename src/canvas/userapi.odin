@@ -405,6 +405,18 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 	}
 	console_h := NodeConsoleId(node_h)
 	console := GetConsole(console_h)
+	// 新会话初始目录(优先级递减):
+	//   ① 目标窗格会话自己报告过的目录
+	//   ② 焦点窗口会话的目录(新建页时焦点已在新页,查不到就往下)
+	//   ③ 任意会话最近报告过的目录(旧页/其他窗口)
+	//   ④ 配置默认(命令 `cwd`)
+	source_cwd := ""
+	if console != nil {
+		source_cwd = console.cwd
+	}
+	if source_cwd == "" {
+		source_cwd = GetSessionCwd()
+	}
 	// 单窗模式:已占用 = 启动会自动分屏(树变),拒绝;空闲 = 就地启动,允许
 	if singleGuard() && console != nil && console.conpty_handle.id != 0 {
 		return false
@@ -430,7 +442,7 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 		fmt.eprintln("LC: no font -> no cell size -> no console. Alacritty would have silently used a fallback font and let you be wrong. SetConsoleFont first, genius.")
 		return false // 未设置字体,先 SetConsoleFont
 	}
-	conpty_h, ok := ct.CreateConptyContext({80, 24}, cmd)
+	conpty_h, ok := ct.CreateConptyContext({80, 24}, cmd, source_cwd)
 	if !ok {
 		fmt.eprintln("LC: CreateConptyContext died before foreplay. Your command is wrong, cursed, or both:", cmd)
 		return false
@@ -459,6 +471,33 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 		TreeNodeSetConsole(node_h, new_h)
 	}
 	return true
+}
+
+// 焦点窗口会话报告过的工作目录(OSC 7;"" = 未报告)。`cwd` 查询命令显示它。
+FocusedConsoleCwd :: proc() -> string {
+	node_h := resolveWindow({})
+	if node_h.id == 0 {
+		return ""
+	}
+	console := NodeConsole(node_h)
+	if console == nil {
+		return ""
+	}
+	return console.cwd
+}
+
+// 焦点窗口所属 console 的应用标题(OSC 0/2 设置;"" = 未设置)。
+// OS 窗口标题栏用它;tabbar 仍显示 Page.title —— 用户命名与应用命名互不覆盖。
+FocusedAppTitle :: proc() -> string {
+	node_h := resolveWindow({})
+	if node_h.id == 0 {
+		return ""
+	}
+	console := NodeConsole(node_h)
+	if console == nil {
+		return ""
+	}
+	return console.app_title
 }
 
 // 通过 conpty 向 id(或焦点)窗格的会话输入字符串。

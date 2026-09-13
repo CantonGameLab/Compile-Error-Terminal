@@ -43,6 +43,56 @@ Console :: struct {
 
 	input_activity_ms : u64, // 最近用户输入活动时刻(FeedConsole 唯一写点;
 	// render 用于"输入期间光标不闪烁"判定;0 = 从未输入)
+
+	// 应用侧状态(OSC 唯一写点;渲染只读;字符串所有权 = 本结构):
+	//   app_title → OS 窗口标题显示它(tabbar 仍用 Page.title,互不覆盖)
+	//   cwd       → 该会话最后报告的工作目录(OSC 7;新会话继承它)
+	app_title : string,
+	cwd : string,
+}
+
+// ---------------------------------------------------------------------------
+// 配置默认工作目录(命令 `cwd` 写):没有任何会话报告过目录时的兜底。
+// 真正的目录记忆在各 Console.cwd —— 全局单值会被 shell 每次提示符的 OSC 7
+// 上报打回原形(每个提示符都发),所以它只当"配置默认值"用。
+// ---------------------------------------------------------------------------
+session_cwd : string
+
+GetSessionCwd :: proc() -> string {
+	return session_cwd
+}
+
+// 配置默认目录的唯一写点(命令 `cwd`);入参经形态归一(msys2 的 /c/... → C:\...)
+SetSessionCwd :: proc(path : string) {
+	norm : [CWD_MAX]u8
+	m := cwdNormalize(path, norm[:])
+	if session_cwd != "" {
+		delete(session_cwd)
+		session_cwd = ""
+	}
+	if m > 0 {
+		session_cwd = strings.clone(string(norm[:m]))
+	}
+}
+
+// 某会话报告的工作目录(OSC 7 唯一写点;空 = 清除)
+SetConsoleCwd :: proc(console_h : mem.Handle, path : string) {
+	console := GetConsole(console_h)
+	if console == nil {
+		return
+	}
+	if console.cwd != "" {
+		delete(console.cwd)
+		console.cwd = ""
+	}
+	if len(path) == 0 {
+		return
+	}
+	norm : [CWD_MAX]u8
+	m := cwdNormalize(path, norm[:])
+	if m > 0 {
+		console.cwd = strings.clone(string(norm[:m]))
+	}
 }
 
 consoles : mem.GenArray(MAX_CONSOLE_SLOTS, Console)
@@ -115,6 +165,7 @@ DestroyConsole :: proc(h : mem.Handle) {
 		return
 	}
 	releaseConsoleFontSet(console)
+	releaseConsoleAppState(console)
 	ct.StopReadThread(console.conpty_handle) // 句柄无效 = no-op
 	ct.DestroyConpty(console.conpty_handle)
 	for i in 0 ..< int(console.term_buffer_count) {
@@ -154,6 +205,7 @@ consoleClearSession :: proc(console_h : mem.Handle) -> bool {
 	console.conpty_handle = {}
 	console.vt = VtState {}
 	console.cursor_row, console.cursor_col = 0, 0
+	releaseConsoleAppState(console) // 会话没了:应用标题/目录一并失效
 	return true
 }
 
@@ -177,6 +229,7 @@ consoleInitSession :: proc(console_h : mem.Handle, rows, cols : u16, conpty_hand
 	console.term_buffer_ids = {}
 	console.term_buffer_count = 0
 	console.active_term_buffer_id = {}
+	releaseConsoleAppState(console) // 新会话:应用标题/目录重新积累
 	console.vt = VtState {
 		autowrap = true,
 		cursor_visible = true,
@@ -217,6 +270,18 @@ releaseConsoleFontSet :: proc(console : ^Console) {
 	if console.font_input != "" {
 		delete(console.font_input)
 		console.font_input = ""
+	}
+}
+
+// 释放应用侧状态(OSC 设置的标题 / 工作目录);重复调用无害
+releaseConsoleAppState :: proc(console : ^Console) {
+	if console.app_title != "" {
+		delete(console.app_title)
+		console.app_title = ""
+	}
+	if console.cwd != "" {
+		delete(console.cwd)
+		console.cwd = ""
 	}
 }
 

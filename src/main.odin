@@ -26,7 +26,7 @@ main :: proc() {
 	command.LoadConfig()
 	if canvas.PageCount() == 0 {
 		
-		fmt.println("Bro you should at least create ONE page to start! So now we can't help you anymore")
+		fmt.println("Bro you should at least create ONE page in the right way to start! So now I can't help you anymore")
 	}
 
 	//MAIN LOOP标准循环
@@ -41,9 +41,11 @@ main :: proc() {
 		ret := canvas.Update() // ② 剩余:鼠标路由/文本(未消费)/树/轮询/事件读回
 		if !ret { 
 			fmt.println("all windows closed")
-			fmt.println("Thank you for using our terminal emulator sailor!")
+			fmt.println("Thank you for using our Compile Error terminal emulator. SAILOR!")
 			break
 		}
+		// OS 窗口标题:焦点 console 的应用标题(OSC 0/2);空 = 回落页标题
+		render.SyncWindowTitle(canvas.FocusedAppTitle(), canvas.CurrentPageTitle())
 		render.Update()
 	}
 }

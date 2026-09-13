@@ -11,18 +11,19 @@
 load "themes.dterm"
 
 # ---- 外观与启动 ----
-theme dracula
+theme tango-dark
 # 逐项覆盖主题(theme-set "<名字>" <字段> <#RRGGBB>;名字不存在则新建):
 # theme-set "mine" bg "#101014"
 # theme-set "mine" fg "#D0D0D0"
 # theme-set "mine" ansi3 "#C4A000"     # ansi0..ansi15
 # theme-set "mine" tab_active_bg "#101014"
 # theme mine
-default-launch "bash" "Consolas" 26
+default-launch "zsh" "FiraCode Nerd Font Mono" 22
 vsync on
 borderless off
 bgshader
 
+cwd "C://Users/GroupTheory"
 
 # ---- 焦点(Alt + HJKL)----
 bind alt+h "focus left"
@@ -80,4 +81,4 @@ bind alt+f "borderless"
 bind alt+s "single"
 
 # ---- 第一页(建页 + 根窗格;根窗格按上面的 default-launch 启动)----
-# page-new
+page-new

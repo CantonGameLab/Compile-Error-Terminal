@@ -72,6 +72,7 @@ CommandStringKind :: enum u8 {
 	ToggleCommandBar,
 	DefaultLaunch,  // sval(cmd)+ sval2(font)+ fval(size)
 	Load,           // sval(配置文件路径;执行另一个命令文件)
+	Cwd,            // sval(空 = 查询全局会话工作目录)
 	// 键位
 	SetBinding,   // sc + mods + sub(子命令句柄,解析层分配)
 	UnsetBinding, // sc + mods
@@ -356,6 +357,26 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 		return true
 	case .Load:
 		return configLoadFile(cmd.sval)
+	case .Cwd:
+		// 无参数 = 查询(会话记忆目录 + 配置默认);有参数 = 设置配置默认
+		if len(cmd.sval) == 0 {
+			if out != nil {
+				sess := cv.FocusedConsoleCwd()
+				def := cv.GetSessionCwd()
+				if len(sess) > 0 {
+					out(fmt.tprintf("cwd(焦点会话): %s", sess))
+				}
+				if len(def) > 0 {
+					out(fmt.tprintf("cwd(配置默认): %s", def))
+				}
+				if len(sess) == 0 && len(def) == 0 {
+					out("cwd: (都没有 —— 新会话继承 dterm 进程目录)")
+				}
+			}
+			return true
+		}
+		cv.SetSessionCwd(cmd.sval)
+		return true
 
 	// ---- 键位 ----
 	case .SetBinding:

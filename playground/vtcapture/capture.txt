@@ -1,24 +1,2 @@
-<ESC>[?9001h<ESC>[?1004h<ESC>[>q<ESC>[16t<ESC>[?25l<ESC>[2J<ESC>[m<ESC>[H<ESC>]0;C:\Users\GroupTheory\AppData\Local\Programs\yazi\yazi-x86_64-pc-windows-msvc\yazi.exe<BEL><ESC>[?25h<ESC>[?1049h<ESC>[?u<ESC>[?2004h<ESC>[?1003;1006h<ESC>[2J<ESC>[?2026h<ESC>[?2026l<ESC>[38;5;6m~\Source\dterm<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│<ESC>[14X<ESC>[m<ESC>[14CLoading...<ESC>[14X<ESC>[38;5;7m<ESC>[14C│<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[m<CR><LF>
-<ESC>[10X<ESC>[38;5;7m<ESC>[10C│                                      │<ESC>[K<ESC>[38;5;4m<CR><LF>
-<ESC>[39m<ESC>[48;5;4m<ESC>[1m NOR <ESC>[38;5;4m<ESC>[48;5;7m<ESC>[22m 0B <ESC>[38;5;7m<ESC>[49m                                                     <ESC>[38;5;4m<ESC>[48;5;7m Top <ESC>[39m<ESC>[48;5;4m<ESC>[1m  0/0  <ESC>[38;5;4m<ESC>[49m<ESC>[22m<ESC>]0;Yazi: dterm<BEL><ESC>[?25l<ESC>[?2026h<ESC>[?2026l<ESC>[m<ESC>[38;5;4m<ESC>[2;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mcsapp <ESC>[1C<ESC>[7m .claude                           <ESC>[27m<ESC>[m<ESC>[4m<ESC>[1C  settings.local.json       <ESC>[38;5;4m<ESC>[24m<ESC>[3;2H<ESC>[7m dterm<ESC>[27m<ESC>[1C <ESC>[38;2;3;169;244m <ESC>[38;5;4mcache<ESC>[30X<ESC>[4;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mGAMES <ESC>[1C <ESC>[38;2;3;169;244m <ESC>[38;5;4mdlls<ESC>[31X<ESC>[5;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mGL    <ESC>[1C <ESC>[38;2;3;169;244m <ESC>[38;5;4minclude<ESC>[28X<ESC>[6;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mGrou… <ESC>[1C <ESC>[38;2;3;169;244m <ESC>[38;5;4mplayground<ESC>[25X<ESC>[7;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mGrou… <ESC>[1C <ESC>[38;2;3;169;244m <ESC>[38;5;4mreference<ESC>[26X<ESC>[8;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mGrou… <ESC>[1C <ESC>[38;2;3;169;244m <ESC>[38;5;4mresource<ESC>[27X<ESC>[9;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mLear… <ESC>[1C <ESC>[38;2;3;169;244m <ESC>[38;5;4msrc<ESC>[32X<ESC>[10;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mmad-… <ESC>[38;2;245;77;39m<ESC>[2C <ESC>[m.gitignore<ESC>[38;5;4m<ESC>[11;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mMida… <ESC>[38;2;221;221;221m<ESC>[2C <ESC>[mCLAUDE.md<ESC>[38;5;4m<ESC>[12;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mOdin… <ESC>[38;2;77;44;11m<ESC>[2C <ESC>[mdelayimp.lib<ESC>[38;5;4m<ESC>[13;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mPart… <ESC>[38;2;159;5;0m<ESC>[2C <ESC>[mfonttest.exe<ESC>[38;5;4m<ESC>[14;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mPlay… <ESC>[38;2;221;221;221m<ESC>[2C <ESC>[mHANDOFF.md<ESC>[38;5;4m<ESC>[15;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mrepos <ESC>[38;2;208;191;65m<ESC>[2C <ESC>[mLICENSE<ESC>[38;5;4m<ESC>[16;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mTEMP  <ESC>[38;2;159;5;0m<ESC>[2C <ESC>[mmain.exe<ESC>[38;5;4m<ESC>[17;2H <ESC>[38;2;3;169;244m <ESC>[38;5;4mtest… <ESC>[38;2;221;221;221m<ESC>[2C󰌱 <ESC>[mnvim.log<ESC>[38;2;236;165;23m<ESC>[18;3H <ESC>[mG….7z<ESC>[38;2;237;237;237m<ESC>[3C󰂺 <ESC>[mREADME.md<ESC>[38;2;159;5;0m<ESC>[19;13H <ESC>[mrendertest.exe<ESC>[38;2;77;44;11m<ESC>[20;13H <ESC>[mSDL3.dll<ESC>[38;2;159;5;0m<ESC>[21;13H <ESC>[msrc.exe<ESC>[38;2;159;5;0m<ESC>[22;13H <ESC>[mvtcapture.exe<ESC>[24;14H.claude<ESC>[48;5;4m<ESC>[1m<ESC>[54C1<ESC>[1C21
+<ESC>[?9001h<ESC>[?1004h<ESC>[?25l<ESC>[2J<ESC>[m<ESC>[H      0 [main] bash (32912) C:\msys64\usr\bin\bash.exe: *** fatal error - CreateFileMapping S-1-5-21-3307697176-3827935098-3487927587-1001.1, Win32 error 5.  Terminating.<CR><LF>
+<ESC>]0;C:\msys64\usr\bin\bash.exe<BEL><ESC>[?25h

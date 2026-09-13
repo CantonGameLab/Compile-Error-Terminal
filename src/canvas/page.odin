@@ -273,6 +273,11 @@ PageTitle :: proc(page_h : mem.Handle) -> string {
 	return ""
 }
 
+// 当前页标题(OS 窗口标题的回落值:焦点 console 无 OSC 应用标题时用它)
+CurrentPageTitle :: proc() -> string {
+	return PageTitle(current_page)
+}
+
 PageSetTitle :: proc(page_h : mem.Handle, s : string) -> bool {
 	p := mem.Get(&pages, page_h)
 	if p == nil {

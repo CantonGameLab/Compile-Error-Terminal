@@ -254,6 +254,11 @@ COMMAND_SPECS := [?]CommandSpec {
 		usage = `"<path>"`,
 		help = "执行另一个命令文件(相对路径 = 相对当前文件所在目录;配置文件顺序自管)",
 	},
+	{
+		name = "cwd", kind = .Cwd, args = {.Str, .None, .None}, req = 0,
+		usage = `["<path>"]`,
+		help = "全局会话工作目录:所有新窗口的初始目录(省略参数 = 查询当前值)",
+	},
 
 	// ---- 键位 ----
 	{
