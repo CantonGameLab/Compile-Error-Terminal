@@ -44,8 +44,8 @@ main :: proc() {
 			fmt.println("Thank you for using our Compile Error terminal emulator. SAILOR!")
 			break
 		}
-		// OS 窗口标题:焦点 console 的应用标题(OSC 0/2);空 = 回落页标题
-		render.SyncWindowTitle(canvas.FocusedAppTitle(), canvas.CurrentPageTitle())
+		// OS 窗口标题:焦点 console 的应用标题(OSC 0/2);空 = 启动标题
+		render.SyncWindowTitle(canvas.FocusedAppTitle())
 		render.Update()
 	}
 }

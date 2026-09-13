@@ -2,7 +2,12 @@
 // 忠实移植 + 两处必要补充:
 //   1. UTF-8:原版仅 ASCII,GROUND 会丢弃 0xC0-0xFF;终端需要中文等
 //   2. OSC 以 BEL(0x07)终止:xterm/ConPTY 实际用 BEL 结尾
+// 结构:Parser 是 Console 的组件(纯草稿纸)—— 不存句柄、不留回调、无上下文;
+// Parse 是唯一入口(唯一参数 = 会话句柄),查表与三步转移就地展开,
+// 动作在 doAction 里直接派发给 vtDispatch(console_h, …)。
 package canvas
+
+import mem "../memory"
 
 Action :: enum u8 {
 	None = 0,
@@ -21,7 +26,7 @@ Action :: enum u8 {
 	Print,
 	Put,
 	Unhook,
-	// 注:UTF-8 不再以 Action 表达,由 Parse 顶层拦截(isUtf8Start/utf8Collects)
+	// 注:UTF-8 不再以 Action 表达,由 Parse 顶层拦截
 }
 
 State :: enum u8 {
@@ -42,8 +47,6 @@ State :: enum u8 {
 	NoChange = 255, // 哨兵:状态不变
 }
 
-Callback :: #type proc(p : ^Parser, action : Action, ch : rune)
-
 // 参数值上限:DEC 标准 16384,xterm/VTE 用 65535(win32-input-mode 传 UTF-16 值)
 MAX_PARAMETER_VALUE :: 65535
 
@@ -51,9 +54,10 @@ MAX_INTERMEDIATE_CHARS :: 2
 MAX_PARAMS :: 16
 MAX_SUBPARAMS :: 6 // 每参数组最多子参(WT 同限;SGR 38:2::r:g:b 需 6)
 
+// 字节识别态(草稿纸):Console 的一个组件,1:1 持有,无独立生命周期,
+// 字段只在 Parse/doAction 内被读写。
 Parser :: struct {
 	state : State,
-	cb : Callback,
 	intermediate_chars : [MAX_INTERMEDIATE_CHARS + 1]u8,
 	num_intermediate_chars : int,
 	ignore_flagged : bool,
@@ -63,7 +67,6 @@ Parser :: struct {
 	subparams : [MAX_PARAMS][MAX_SUBPARAMS]int,
 	num_subparams : [MAX_PARAMS]u8, // 各组子参数个数(含主值);0 = 组未定型
 	num_params : int,
-	user_data : rawptr, // 回调上下文(Canvas 存 Console 句柄)
 
 	// UTF-8(GROUND 状态消费,先于状态机)
 	utf8_pending : [4]u8,
@@ -82,213 +85,184 @@ StateSpec :: struct {
 	tr : []Transition,
 }
 
-Init :: proc(p : ^Parser, cb : Callback) {
-	p.state = .Ground
-	p.num_intermediate_chars = 0
-	p.num_params = 0
-	p.ignore_flagged = false
-	p.cb = cb
-	p.utf8_pending_len = 0
-}
-
-Parse :: proc(p : ^Parser, data : []byte) {
+// 入口:字节流 → 动作 → 语义层。唯一参数是会话句柄,所有操作落在 console 上。
+// 查表与三步转移就地展开(算法辅助过程不另立函数,读一遍就看完整条规则)。
+Parse :: proc(console_h : mem.Handle, data : []byte) {
+	console := GetConsole(console_h)
+	if console == nil {
+		return
+	}
 	for b in data {
-		// UTF-8 续字节:先于状态机消费(任何状态)
-		if p.utf8_pending_len > 0 {
+		// ① UTF-8 续字节:先于状态机消费(任何状态)
+		if console.parser.utf8_pending_len > 0 {
 			if b & 0xC0 == 0x80 { // 0b10xxxxxx = 续字节
-				p.utf8_pending[p.utf8_pending_len] = b
-				p.utf8_pending_len += 1
-				if p.utf8_pending_len >= utf8Len(p.utf8_pending[0]) {
-					cp := decodeRune(p.utf8_pending[:p.utf8_pending_len])
-					p.utf8_pending_len = 0
-					utf8Emit(p, cp)
+				console.parser.utf8_pending[console.parser.utf8_pending_len] = b
+				console.parser.utf8_pending_len += 1
+				if console.parser.utf8_pending_len >= utf8Len(console.parser.utf8_pending[0]) {
+					cp := decodeRune(console.parser.utf8_pending[:console.parser.utf8_pending_len])
+					console.parser.utf8_pending_len = 0
+					// 解码完成 → 按当前状态决定去向(Ground = 打印;OSC/DCS = 字符串内容)
+					#partial switch console.parser.state {
+					case .Ground:         vtDispatch(console_h, .Print, cp)
+					case .OscString:      vtDispatch(console_h, .OscPut, cp)
+					case .DcsPassthrough: vtDispatch(console_h, .Put, cp)
+					}
 				}
 				continue
 			}
 			// 非法续字节(控制/ASCII/新起始):丢弃截断序列,当前字节重新走状态机。
 			// 关键:不吞 ESC/CSI(截断字符串后的序列必须完整生效)。
-			p.utf8_pending_len = 0
+			console.parser.utf8_pending_len = 0
 		}
-		// 合法 UTF-8 起始,且当前状态会产出文本/字符串内容才收集
-		if isUtf8Start(b) && utf8Collects(p.state) {
-			p.utf8_pending[0] = b
-			p.utf8_pending_len = 1
-			continue
+		// ② 合法 UTF-8 起始 C2-DF/E0-EF/F0-F4(C0/C1 overlong 与 F5-FF 非法),
+		//    且当前状态会产出文本/字符串内容才收集;CSI/ESC 等控制序列中的 0x80+ 由状态机忽略。
+		if b >= 0xC2 && b <= 0xF4 {
+			collects := false
+			#partial switch console.parser.state {
+			case .Ground, .OscString, .DcsPassthrough, .SosPmApcString:
+				collects = true
+			}
+			if collects {
+				console.parser.utf8_pending[0] = b
+				console.parser.utf8_pending_len = 1
+				continue
+			}
 		}
-		act, to := lookup(p, b)
-		doTransition(p, act, to, b)
+		// ③ 查表:任意状态生效的转移(ESC/C1 控制)优先,其次状态内转移
+		act, to := Action.None, State.NoChange
+		for t in anywhere_transitions {
+			if b >= t.lo && b <= t.hi {
+				act, to = t.action, t.to
+				break
+			}
+		}
+		if act == .None && to == .NoChange {
+			for t in state_specs[console.parser.state].tr {
+				if b >= t.lo && b <= t.hi {
+					act, to = t.action, t.to
+					break
+				}
+			}
+		}
+		// ④ 转移:无状态变化只做动作;有变化则"旧状态 exit → 本次动作 → 新状态 entry"
+		//    (这个顺序是语义的一部分:进 CSI 前 Clear 清参数、出 OSC 时 OscEnd 收尾)
+		if to == .NoChange {
+			doAction(console_h, act, b)
+		} else {
+			exit := state_specs[console.parser.state].exit
+			entry := state_specs[to].entry
+			if exit != .None {
+				doAction(console_h, exit, 0)
+			}
+			if act != .None {
+				doAction(console_h, act, b)
+			}
+			if entry != .None {
+				doAction(console_h, entry, 0)
+			}
+			console.parser.state = to
+		}
 	}
 }
 
-// 合法起始:C2-DF(2 字节)/E0-EF(3 字节)/F0-F4(4 字节)。
-// C0/C1(overlong 编码)与 F5-FF 非法 → 不进收集,由状态机忽略。
-isUtf8Start :: proc(b : u8) -> bool {
-	return b >= 0xC2 && b <= 0xF4
-}
-
-// 只收集会产出"可见字符/字符串内容"的状态;CSI/ESC 等控制序列中的
-// 0x80+ 字节 = 非法位置,由状态机忽略。
-utf8Collects :: proc(state : State) -> bool {
-	#partial switch state {
-	case .Ground, .OscString, .DcsPassthrough, .SosPmApcString:
-		return true
+// 一个动作作用到识别态(参数/中间字节记账),需要语义的动作直接派发出去。
+// 内部动作(Clear/Collect/Param/Ignore)到此为止,永远不出这个函数。
+doAction :: proc(console_h : mem.Handle, action : Action, ch : u8) {
+	console := GetConsole(console_h)
+	if console == nil {
+		return
 	}
-	return false
-}
-
-// 解码完成 → 按当前状态决定去向(Ground = 打印;OSC/DCS = 字符串内容)
-utf8Emit :: proc(p : ^Parser, cp : rune) {
-	#partial switch p.state {
-	case .Ground:
-		call(p, .Print, cp)
-	case .OscString:
-		call(p, .OscPut, cp)
-	case .DcsPassthrough:
-		call(p, .Put, cp)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// 状态机
-// ---------------------------------------------------------------------------
-
-lookup :: proc(p : ^Parser, b : u8) -> (Action, State) {
-	// 任意状态生效的转移(ESC/C1 控制)
-	for t in anywhere_transitions {
-		if b >= t.lo && b <= t.hi {
-			return t.action, t.to
-		}
-	}
-	// 状态内转移
-	spec := &state_specs[p.state]
-	for t in spec.tr {
-		if b >= t.lo && b <= t.hi {
-			return t.action, t.to
-		}
-	}
-	return .None, .NoChange
-}
-
-doTransition :: proc(p : ^Parser, action : Action, to : State, ch : u8) {
-	if to != .NoChange {
-		exit := state_specs[p.state].exit
-		entry := state_specs[to].entry
-		if exit != .None {
-			doAction(p, exit, 0)
-		}
-		if action != .None {
-			doAction(p, action, ch)
-		}
-		if entry != .None {
-			doAction(p, entry, 0)
-		}
-		p.state = to
-	} else {
-		doAction(p, action, ch)
-	}
-}
-
-doAction :: proc(p : ^Parser, action : Action, ch : u8) {
 	#partial switch action {
 	case .Collect:
-		if p.num_intermediate_chars + 1 > MAX_INTERMEDIATE_CHARS {
-			p.ignore_flagged = true
+		if console.parser.num_intermediate_chars + 1 > MAX_INTERMEDIATE_CHARS {
+			console.parser.ignore_flagged = true
 		} else {
-			p.intermediate_chars[p.num_intermediate_chars] = ch
-			p.num_intermediate_chars += 1
+			console.parser.intermediate_chars[console.parser.num_intermediate_chars] = ch
+			console.parser.num_intermediate_chars += 1
 		}
 	case .Param:
 		if ch == ';' {
 			// 分号 = 新参数组;当前组定型(空段 = 1 个 0)
-			if p.num_params == 0 {
-				p.num_params = 1
-				p.num_subparams[0] = 0
-				p.params[0] = 0
+			if console.parser.num_params == 0 {
+				console.parser.num_params = 1
+				console.parser.num_subparams[0] = 0
+				console.parser.params[0] = 0
 			}
-			paramEnd(p)
-			if p.num_params < MAX_PARAMS {
-				p.num_params += 1
-				p.num_subparams[p.num_params - 1] = 0
+			paramEnd(console_h)
+			if console.parser.num_params < MAX_PARAMS {
+				console.parser.num_params += 1
+				console.parser.num_subparams[console.parser.num_params - 1] = 0
 			}
 		} else if ch == ':' {
 			// 冒号 = 组内子参;当前子参定型,开新子参(值 0)
-			if p.num_params == 0 {
-				p.num_params = 1
-				p.num_subparams[0] = 0
-				p.params[0] = 0
+			if console.parser.num_params == 0 {
+				console.parser.num_params = 1
+				console.parser.num_subparams[0] = 0
+				console.parser.params[0] = 0
 			}
-			if p.num_params <= MAX_PARAMS {
-				paramEnd(p)
-				i := p.num_params - 1
-				if int(p.num_subparams[i]) < MAX_SUBPARAMS {
-					p.num_subparams[i] += 1
-					p.subparams[i][p.num_subparams[i] - 1] = 0
+			if console.parser.num_params <= MAX_PARAMS {
+				paramEnd(console_h)
+				i := console.parser.num_params - 1
+				if int(console.parser.num_subparams[i]) < MAX_SUBPARAMS {
+					console.parser.num_subparams[i] += 1
+					console.parser.subparams[i][console.parser.num_subparams[i] - 1] = 0
 				}
 			}
 		} else {
 			// 数字:累加到当前组最后一个子参;主值(第一个子参)同步 params
-			if p.num_params == 0 {
-				p.num_params = 1
-				p.num_subparams[0] = 0
-				p.params[0] = 0
+			if console.parser.num_params == 0 {
+				console.parser.num_params = 1
+				console.parser.num_subparams[0] = 0
+				console.parser.params[0] = 0
 			}
-			if p.num_params <= MAX_PARAMS {
-				i := p.num_params - 1
-				if p.num_subparams[i] == 0 {
-					p.num_subparams[i] = 1
-					p.subparams[i][0] = 0
+			if console.parser.num_params <= MAX_PARAMS {
+				i := console.parser.num_params - 1
+				if console.parser.num_subparams[i] == 0 {
+					console.parser.num_subparams[i] = 1
+					console.parser.subparams[i][0] = 0
 				}
-				j := int(p.num_subparams[i]) - 1
-				v := p.subparams[i][j] * 10 + int(ch - '0')
+				j := int(console.parser.num_subparams[i]) - 1
+				v := console.parser.subparams[i][j] * 10 + int(ch - '0')
 				if v > MAX_PARAMETER_VALUE {
 					v = MAX_PARAMETER_VALUE
 				}
-				p.subparams[i][j] = v
+				console.parser.subparams[i][j] = v
 				if j == 0 {
-					p.params[i] = v
+					console.parser.params[i] = v
 				}
 			}
 		}
 	case .Clear:
-		p.num_intermediate_chars = 0
-		p.num_params = 0
-		p.ignore_flagged = false
+		console.parser.num_intermediate_chars = 0
+		console.parser.num_params = 0
+		console.parser.ignore_flagged = false
 		for i in 0 ..< MAX_PARAMS {
-			p.num_subparams[i] = 0
+			console.parser.num_subparams[i] = 0
 		}
 	case .Ignore:
 		// 无操作
-	case .Error:
-		call(p, .Error, rune(ch))
 	case .CsiDispatch:
-		flushParams(p) // 末尾组定型(如 CSI 5;)后派发
-		call(p, action, rune(ch))
+		paramEnd(console_h) // 末尾组定型(如 CSI 5;)后派发
+		vtDispatch(console_h, action, rune(ch))
 	case:
-		call(p, action, rune(ch))
+		vtDispatch(console_h, action, rune(ch))
 	}
 }
 
 // 当前组定型:无子参则补一个 0(空段);主值同步(防 params 残留)
-paramEnd :: proc(p : ^Parser) {
-	i := p.num_params - 1
+paramEnd :: proc(console_h : mem.Handle) {
+	console := GetConsole(console_h)
+	if console == nil {
+		return
+	}
+	i := console.parser.num_params - 1
 	if i < 0 {
 		return
 	}
-	if p.num_subparams[i] == 0 {
-		p.num_subparams[i] = 1
-		p.subparams[i][0] = 0
-		p.params[i] = 0
-	}
-}
-
-// 全部组定型(dispatch 前);未定型组 = 空段 0
-flushParams :: proc(p : ^Parser) {
-	paramEnd(p)
-}
-
-call :: proc(p : ^Parser, action : Action, ch : rune) {
-	if p.cb != nil {
-		p.cb(p, action, ch)
+	if console.parser.num_subparams[i] == 0 {
+		console.parser.num_subparams[i] = 1
+		console.parser.subparams[i][0] = 0
+		console.parser.params[i] = 0
 	}
 }
 
@@ -342,7 +316,7 @@ tr_ground := [?]Transition{
 	{0x19, 0x19, .Execute, .NoChange},
 	{0x1C, 0x1F, .Execute, .NoChange},
 	{0x20, 0x7F, .Print, .NoChange},
-	// UTF-8 起始由 Parse 顶层拦截(isUtf8Start + utf8Collects),不走状态机表
+	// UTF-8 起始由 Parse 顶层拦截,不走状态机表
 }
 
 tr_escape := [?]Transition{

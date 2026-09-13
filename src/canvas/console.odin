@@ -25,6 +25,8 @@ Console :: struct {
 	origin_x, origin_y : f32, // 居中后网格左上角(内容区坐标空间);每帧由 ConsoleUpdateLayout 重算
 	cursor_row, cursor_col : u16, // 指向 active buffer 的物理行
 
+	// 输入识别态(草稿纸)与终端语义态:两个平级组件,分别见 vtparse.odin / vt.odin
+	parser : Parser,
 	vt : VtState,
 
 	term_buffer_ids : [MAX_BUFFERS_PER_CONSOLE]mem.Handle, // ids[0] = 主屏
@@ -203,6 +205,7 @@ consoleClearSession :: proc(console_h : mem.Handle) -> bool {
 	console.term_buffer_count = 0
 	console.active_term_buffer_id = {}
 	console.conpty_handle = {}
+	console.parser = Parser {}
 	console.vt = VtState {}
 	console.cursor_row, console.cursor_col = 0, 0
 	releaseConsoleAppState(console) // 会话没了:应用标题/目录一并失效
@@ -230,15 +233,13 @@ consoleInitSession :: proc(console_h : mem.Handle, rows, cols : u16, conpty_hand
 	console.term_buffer_count = 0
 	console.active_term_buffer_id = {}
 	releaseConsoleAppState(console) // 新会话:应用标题/目录重新积累
+	console.parser = Parser {} // 草稿纸清零:状态机的初值就是零值
 	console.vt = VtState {
 		autowrap = true,
 		cursor_visible = true,
 		scroll_bottom = rows - 1,
 		style = { fg = DEFAULT_COLOR, bg = DEFAULT_COLOR },
 	}
-	// 解析器回调绑定(user_data 存句柄供回调取回)
-	Init(&console.vt.parser, vtParserCallback)
-	console.vt.parser.user_data = packHandle(console_h)
 	if !ConsoleAttachTermBuffer(console_h, tb_h) {
 		DestroyTermBuffer(tb_h)
 		return false

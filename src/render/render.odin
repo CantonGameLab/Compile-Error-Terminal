@@ -145,21 +145,22 @@ GetWindow :: proc() -> ^s3.Window {
 }
 
 // ---------------------------------------------------------------------------
-// 窗口标题:OS 标题栏 = 焦点 console 的应用标题(OSC 0/2);空则回落页标题。
-// tabbar 仍显示 Page.title —— 用户命名与应用命名各归各位。仅变化时落 SDL。
+// 窗口标题:OS 标题栏 = 焦点 console 的应用标题(OSC 0/2)。空 = 启动标题
+// (INIT_WINDOW_TITLE),绝不回落 Page.title —— 页标题属于 tabbar,程序没自报标题时
+// 标题栏就该保持静止,而不是显示页序号。仅变化时落 SDL。
 // ---------------------------------------------------------------------------
 WINDOW_TITLE_MAX :: 192
 
 window_title : [WINDOW_TITLE_MAX + 1]u8
 window_title_len : int
 
-SyncWindowTitle :: proc(app_title, page_title : string) {
+SyncWindowTitle :: proc(app_title : string) {
 	if window == nil {
 		return
 	}
 	t := app_title
 	if len(t) == 0 {
-		t = page_title
+		t = INIT_WINDOW_TITLE
 	}
 	n := min(len(t), WINDOW_TITLE_MAX)
 	if n == window_title_len && string(window_title[:n]) == string(window_title[:window_title_len]) {

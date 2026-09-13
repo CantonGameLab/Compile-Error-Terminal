@@ -10,11 +10,9 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 
-// VT 解析:vtparse 状态机(字节流 → 动作回调),回调操作 Console。
-// 每帧 UpdateConsole(id) 拉取 ConPTY 输出喂给解析器;VtState 嵌在 Console.vt。
+// VT 语义层:VtState(模式位与外观)+ 指令分派(ESC/CSI/SGR/DEC 模式/OSC/应答)。
+// 每帧 UpdateConsole(id) 拉取 ConPTY 输出喂给 Parse;VtState 与 Parser 并列在 Console 下。
 VtState :: struct {
-	parser : Parser, // 字节级状态机(切分序列)
-
 	style : CellStyle,
 	saved_cursor_row, saved_cursor_col : u16,
 	saved_scroll_top, saved_scroll_bottom : u16, // 交替屏进出时保存/恢复滚动区
@@ -74,21 +72,21 @@ vtFeed :: proc(console_h : mem.Handle, data : []byte) {
 	if console == nil {
 		return
 	}
-	Parse(&console.vt.parser, data)
+	Parse(console_h, data)
 }
 
-// vtparse 回调 → canvas 操作(Console 句柄经 user_data 取回)
-vtParserCallback :: proc(p : ^Parser, action : Action, ch : rune) {
-	console_h := unpackHandle(p.user_data)
+// 动作派发:识别层交给语义层的唯一入口(唯一参数 = 会话句柄)。
+// 内部动作(Clear/Collect/Param/Ignore)在 vtparse 里就消化了,到不了这里。
+vtDispatch :: proc(console_h : mem.Handle, action : Action, ch : rune) {
 	#partial switch action {
 	case .Print:
 		vtPrint(console_h, ch)
 	case .Execute:
 		vtHandleC0(console_h, u8(ch))
 	case .EscDispatch:
-		vtEscDispatch(console_h, p, u8(ch))
+		vtEscDispatch(console_h, u8(ch))
 	case .CsiDispatch:
-		vtCsiDispatch(console_h, p, u8(ch))
+		vtCsiDispatch(console_h, u8(ch))
 	case .OscStart:
 		osc_len = 0
 		osc_bad = false
@@ -405,12 +403,12 @@ b64Val :: proc(c : u8) -> int {
 }
 
 // ESC 序列派发(无中间字节才处理;带中间字节的字符集/属性等忽略)
-vtEscDispatch :: proc(console_h : mem.Handle, p : ^Parser, final : u8) {
+vtEscDispatch :: proc(console_h : mem.Handle, final : u8) {
 	console := GetConsole(console_h)
 	if console == nil {
 		return
 	}
-	if p.num_intermediate_chars > 0 {
+	if console.parser.num_intermediate_chars > 0 {
 		return
 	}
 	switch final {
@@ -429,16 +427,6 @@ vtEscDispatch :: proc(console_h : mem.Handle, p : ^Parser, final : u8) {
 	case 'c': // RIS
 		vtReset(console_h)
 	}
-}
-
-// Handle 打包进 user_data(64 位:id 低 32 位,generation 高 32 位)
-packHandle :: proc(h : mem.Handle) -> rawptr {
-	return rawptr(uintptr(h.id) | uintptr(h.generation) << 32)
-}
-
-unpackHandle :: proc(p : rawptr) -> mem.Handle {
-	v := uintptr(p)
-	return mem.Handle { id = u32(v), generation = u32(v >> 32) }
 }
 
 // ---------------------------------------------------------------------------
@@ -578,7 +566,7 @@ vtTargetRow :: proc(console : ^Console, p0 : int) -> int {
 // ---------------------------------------------------------------------------
 // CSI
 // ---------------------------------------------------------------------------
-vtCsiDispatch :: proc(console_h : mem.Handle, p : ^Parser, final : u8) {
+vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 	console := GetConsole(console_h)
 	if console == nil {
 		return
@@ -595,24 +583,24 @@ vtCsiDispatch :: proc(console_h : mem.Handle, p : ^Parser, final : u8) {
 	// vtparse 的 Clear 只重置 num_params 不清数组:无参数序列必须显式取 0,
 	// 否则读到上一条序列的残留参数(如 ESC[2J 后跟 ESC[H 会带 p0=2)
 	p0 := 0
-	if p.num_params > 0 {
-		p0 = p.params[0]
+	if console.parser.num_params > 0 {
+		p0 = console.parser.params[0]
 	}
 	p1 := 0
-	if p.num_params > 1 {
-		p1 = p.params[1]
+	if console.parser.num_params > 1 {
+		p1 = console.parser.params[1]
 	}
 	// intermediate_chars 按序混合收集私用标记(0x3C-0x3F:> ? < =)与中间字节(0x20-0x2F:$ SP 等)。
 	// 按值域区分:私用标记恒为首字节,中间字节从其后取(DECSCUSR 仅一个 SP 时也能命中)
 	private := u8(0)
 	n_priv := 0
-	if p.num_intermediate_chars > 0 && p.intermediate_chars[0] >= 0x3C && p.intermediate_chars[0] <= 0x3F {
-		private = p.intermediate_chars[0]
+	if console.parser.num_intermediate_chars > 0 && console.parser.intermediate_chars[0] >= 0x3C && console.parser.intermediate_chars[0] <= 0x3F {
+		private = console.parser.intermediate_chars[0]
 		n_priv = 1
 	}
 	intermediate := u8(0)
-	if p.num_intermediate_chars > n_priv {
-		intermediate = p.intermediate_chars[n_priv]
+	if console.parser.num_intermediate_chars > n_priv {
+		intermediate = console.parser.intermediate_chars[n_priv]
 	}
 
 	switch final {
@@ -674,10 +662,10 @@ vtCsiDispatch :: proc(console_h : mem.Handle, p : ^Parser, final : u8) {
 		if private == '>' {
 			vt.modify_other_keys = u8(p1) // CSI > 4;Nm,N=0/1/2
 		} else {
-			vtSgr(console_h, p)
+			vtSgr(console_h)
 		}
 	case 'h', 'l': // DEC 模式
-		vtSetMode(console_h, p, final == 'h')
+		vtSetMode(console_h, final == 'h')
 	case 'r': // 滚动区;origin 置位时光标移到滚动区 home
 		top := clamp(p0 - 1, 0, int(console.rows) - 1)
 		bottom := int(console.rows) - 1
@@ -764,18 +752,18 @@ vtCsiDispatch :: proc(console_h : mem.Handle, p : ^Parser, final : u8) {
 	}
 }
 
-vtSetMode :: proc(console_h : mem.Handle, p : ^Parser, set : bool) {
+vtSetMode :: proc(console_h : mem.Handle, set : bool) {
 	console := GetConsole(console_h)
 	if console == nil {
 		return
 	}
 	vt := &console.vt
-	if p.num_intermediate_chars == 0 || p.intermediate_chars[0] != '?' { // 仅 '?' DEC 私用模式
+	if console.parser.num_intermediate_chars == 0 || console.parser.intermediate_chars[0] != '?' { // 仅 '?' DEC 私用模式
 		return
 	}
 	mode := 0
-	if p.num_params > 0 {
-		mode = p.params[0]
+	if console.parser.num_params > 0 {
+		mode = console.parser.params[0]
 	}
 	switch mode {
 	case 3: // DECCOLM 80/132 列:切换清屏、光标回 home、滚动区重置
@@ -867,14 +855,14 @@ vtAltScreen :: proc(console_h : mem.Handle, enter : bool) {
 // 颜色一律写引用编码(theme.odin):30-37/90-97 → colorIndex(0..15),
 // 38;5 → colorIndex(n),38;2 → RGB,39/49/0 → DEFAULT_COLOR(渲染期按主题解析)。
 
-vtSgr :: proc(console_h : mem.Handle, p : ^Parser) {
+vtSgr :: proc(console_h : mem.Handle) {
 	console := GetConsole(console_h)
 	if console == nil {
 		return
 	}
 	vt := &console.vt
 	style := vt.style
-	params := p.params[:p.num_params]
+	params := console.parser.params[:console.parser.num_params]
 	i := 0
 	// ESC[m(无参数)= ESC[0m:重置样式,不能当 no-op
 	if len(params) == 0 {
@@ -902,19 +890,19 @@ vtSgr :: proc(console_h : mem.Handle, p : ^Parser) {
 		case 55: style.overline = false
 		case 30 ..= 37: style.fg = colorIndex(pp - 30)
 		case 38, 48: // 扩展色:分号式 38;2;r;g;b / 38;5;n;冒号式 38:2::r:g:b / 38:5::n
-			if int(p.num_subparams[i]) > 1 {
+			if int(console.parser.num_subparams[i]) > 1 {
 				// 冒号式:组内子参 [38, mode, ...];RGB 带 colorspace 槽(cs 非 0 拒绝,
 				// 与 WT 一致:非标准 ODA 序列以非零 cs 暴露错误);256 索引取最后一个
 				// 子参(兼容 :5:n 与 :5::n,空段 = 0)。
-				s := &p.subparams[i]
+				s := &console.parser.subparams[i]
 				mode := s[1]
 				switch mode {
 				case 5:
-					n := s[int(p.num_subparams[i]) - 1]
+					n := s[int(console.parser.num_subparams[i]) - 1]
 					color := colorIndex(int(n))
 					if pp == 38 { style.fg = color } else { style.bg = color }
 				case 2:
-					if p.num_subparams[i] == 6 && s[2] == 0 {
+					if console.parser.num_subparams[i] == 6 && s[2] == 0 {
 						color := colorRgb((u32(s[3]) << 16) | (u32(s[4]) << 8) | u32(s[5]))
 						if pp == 38 { style.fg = color } else { style.bg = color }
 					}
