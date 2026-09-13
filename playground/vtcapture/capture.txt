@@ -1,2 +1,0 @@
-<ESC>[?9001h<ESC>[?1004h<ESC>[?25l<ESC>[2J<ESC>[m<ESC>[H      0 [main] bash (32912) C:\msys64\usr\bin\bash.exe: *** fatal error - CreateFileMapping S-1-5-21-3307697176-3827935098-3487927587-1001.1, Win32 error 5.  Terminating.<CR><LF>
-<ESC>]0;C:\msys64\usr\bin\bash.exe<BEL><ESC>[?25h

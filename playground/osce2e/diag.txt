@@ -1,1 +1,0 @@
-WriteConsoleW ok=true written=72
