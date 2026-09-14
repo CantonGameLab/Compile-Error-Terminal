@@ -2,12 +2,12 @@
 // 命令栏、键位绑定、配置文件(command/config.odin)、main 的绑定目标;
 // id 省略(0)= 当前焦点窗格;失败 = false / 空句柄(尽力而为,不抛错),无效输入 = 空操作。
 //
-// 分层规则(见 docs/CODING_STYLE.md 3.3):userapi 只给用户与配置段落;程序内部代码
+// 分层规则(见 docs/CODING_STYLE.md 3.5):userapi 只给用户与配置段落;程序内部代码
 // 一律 GetXxx() 指针直改数据,不调 Set 系列。域内 userapi 归各自数据类文件,本文件
 // 只放窗格/会话/字体/焦点域(数据层:leaf 节点直接持 console,无 Window 中间层):
 //   默认启动配置  SetDefaultLaunch / GetDefaultLaunch
 //   窗格树        CreateWindowTreeRoot / SplitNewWindow / DestroyWindow / SetSplitFactor*
-//                 ExchangeWindow / SetFocusWindow / FocusMove / GetFocusWindow
+//                 ToggleSplitType / ExchangeWindow / SetFocusWindow / FocusMove / GetFocusWindow
 //   字体集        SetConsoleFont / SetConsoleFontSize / AdjustConsoleFontSize
 //   会话          LaunchConsole / FeedConsole / ClearConsoleSession / PollSessions
 //   历史滚动      ConsoleScroll / ConsoleExitReview
@@ -231,6 +231,24 @@ SetSplitFactor :: proc(factor : f32, id : mem.Handle = {}) -> bool {
 		return false
 	}
 	return TreeNodeSetSplitFactor(node.parent_id, factor)
+}
+
+// 切换 id(或焦点)窗格父节点的分割轴(左右 ⇄ 上下)。与 SetSplitFactor 同构:
+// 轴挂在内部节点上,所以作用对象是父节点;几何由 TreeNodeSetSplitType 内的
+// RecalculateTransforms 重算(两轴对称)。焦点即根叶(单窗)= 无可切的分割 → false。
+ToggleSplitType :: proc(id : mem.Handle = {}) -> bool {
+	if singleGuard() {
+		return false // 单窗模式:轴切换禁
+	}
+	node := GetWindowTreeNode(resolveWindow(id))
+	if node == nil || node.parent_id.id == 0 {
+		return false
+	}
+	parent := GetWindowTreeNode(node.parent_id)
+	if parent == nil {
+		return false
+	}
+	return TreeNodeSetSplitType(node.parent_id, parent.split_type == .LeftRight ? .UpDown : .LeftRight)
 }
 
 // 与 id(或焦点)窗格的 dir 方向邻居交换内容:只交换两节点的 console_id,

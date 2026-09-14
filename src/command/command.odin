@@ -31,6 +31,7 @@ CommandStringKind :: enum u8 {
 	Destroy,      // target
 	Factor,       // fval
 	FactorLeaf,   // ival(叶子序号 1-based)+ fval
+	SplitTypeToggle, // 无参数(target 或焦点)
 	Exchange,     // fdir
 	Single,       // mode
 	Count,
@@ -171,6 +172,8 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 		return cv.SetSplitFactor(cmd.fval, cmd.target)
 	case .FactorLeaf:
 		return cv.SetSplitFactorLeaf(cmd.ival, cmd.fval)
+	case .SplitTypeToggle:
+		return cv.ToggleSplitType(cmd.target)
 	case .Exchange:
 		return cv.ExchangeWindow(cmd.fdir, cmd.target)
 	case .Single:

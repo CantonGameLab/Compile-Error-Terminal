@@ -60,6 +60,11 @@ COMMAND_SPECS := [?]CommandSpec {
 		help = "设置先序叶子序号 n(1-based)认领的 split 比例",
 	},
 	{
+		name = "splittype", alias = "rotate", kind = .SplitTypeToggle, target = true,
+		usage = "[@id]",
+		help = "切换窗口父节点的分割轴(左右 ⇄ 上下)",
+	},
+	{
 		name = "exchange", kind = .Exchange, args = {.FocusArg, .None, .None}, req = 1, target = true,
 		usage = "<left|right|up|down> [@id]",
 		help = "与方向邻居交换窗口内容(树结构不变)",
