@@ -1,6 +1,6 @@
-# dterm 默认配置(保底配置)
+# CETerm 默认配置(保底配置)
 #
-# 用户配置:%APPDATA%\Local\dterm\config.dterm
+# 用户配置:%LOCALAPPDATA%\CETerm\config.ceterm
 #   存在且可读 = 只执行用户配置(完全替代本文件);缺失/读失败 = 执行本文件。
 # 语法:一行 = 一条命令(与 F2 命令栏完全相同);行首 # 或 // 为注释;help 查看全部命令。
 # 执行:逐行顺序执行,不分相位 —— 顺序由本文件自己负责:需要窗格的命令
@@ -8,7 +8,7 @@
 # 分片:load "<path>" 引入其它命令文件(相对路径 = 相对本文件所在目录)。
 
 # ---- 主题库(内置 8 套配色,外部数据)----
-load "themes.dterm"
+load "themes.ceterm"
 
 # ---- 外观与启动 ----
 theme tango-dark

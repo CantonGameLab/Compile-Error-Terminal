@@ -1,4 +1,4 @@
-# dterm 主题库(内置主题数据;由 config.dterm 用 load "themes.dterm" 引入)
+# CETerm 主题库(内置主题数据;由 config.ceterm 用 load "themes.ceterm" 引入)
 #
 # 一行 = 一条 theme-set 命令:<主题名> <字段> <#RRGGBB>;字段名 = Theme 结构体字段。
 # 自动建槽:名字首次出现即创建;theme <name> 激活。用户可在自己的配置里覆盖任意字段。
