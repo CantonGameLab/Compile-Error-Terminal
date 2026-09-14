@@ -117,7 +117,7 @@ sub_commands : mem.GenArray(MAX_SUB_COMMANDS, ParsedCommand)
 // 入口
 // ---------------------------------------------------------------------------
 // 每帧唯一入口(main,canvas.Update 之前):键绑定消费(命中即置 consumed)+
-// 命令事件消费(上一帧命令栏提交的队列;结果写回事件槽,canvas 帧内读回)。
+// 命令信道消费(轮询 canvas 各 CommandPoll;结果写回事件槽,生产者帧内回读)。
 Update :: proc() {
 	ProcessKeys()
 	processCommandEvents()

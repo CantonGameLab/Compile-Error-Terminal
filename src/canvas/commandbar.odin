@@ -1,10 +1,11 @@
-// 命令栏数据(全局单例,集成在底部页签条右侧):输入缓冲 + 光标编辑状态。
+// 命令栏数据(全局单例,集成在底部页签条右侧):输入缓冲 + 光标编辑状态 + 命令信道。
 // 单一实例:一次只服务"执行动作"(命令以焦点/目标窗口执行);可见性 = 全局开关
 // (F2 切换);渲染在 render/scene(条内输入框),输入状态机(esc 序列)在本模块。
-// 提交 = PushCommand 入"命令事件队列"(本文件数据;command 模块每帧消费并回写
-// result 槽 → 本模块帧尾 CommandEventsReap 读回,跨层零环)。
+// 提交 = PushCommand 入本栏的信道句柄(池见 commandpipe.odin):command 模块每帧遍历
+// poll 池取走并回写 result 槽 → 本模块帧尾 CommandBarReap 读回,跨层零环。
 package canvas
 
+import mem "../memory"
 import "core:fmt"
 
 // 编辑状态(唯一实例);渲染显示窗口按光标动态切窗口,不落存储
@@ -14,79 +15,18 @@ CommandBar :: struct {
 	input : [MAX_CMD_INPUT]u8, // 输入缓冲
 	len : int, // 已输入字节数
 	cursor : int, // 光标位置(字节,0..len;插入点)
+	poll_h : mem.Handle, // 命令信道句柄(池中本栏那个 poll)
 }
 
 command_bar : CommandBar
 command_bar_visible : bool
 
-// ---------------------------------------------------------------------------
-// 命令事件队列(canvas 生产 → command 消费;异步执行闭环)
-// ---------------------------------------------------------------------------
-MAX_COMMAND_EVENTS :: 16
-
-CommandEvent :: struct {
-	text : [256]u8, // 待执行命令字符串(命令栏提交)
-	len : u8,
-	result : [4096]u8, // 执行结果槽(查询回显多行 / 失败原因;command 写入)
-	result_len : u16,
-	ok : bool, // 执行成功(命令消费后写)
-	done : bool, // 已执行(结果有效;canvas 读回后移除)
-}
-
-command_events : [MAX_COMMAND_EVENTS]CommandEvent
-command_event_count : int
-
-// 命令栏提交(生产;队列满返回 false)
-PushCommand :: proc(s : string) -> bool {
-	if command_event_count >= MAX_COMMAND_EVENTS {
-		return false
+// 本栏的信道句柄(首次取用时分配;池满 = 空句柄 → 提交被拒收)
+CommandBarPoll :: proc() -> mem.Handle {
+	if command_bar.poll_h.id == 0 {
+		command_bar.poll_h = CreateCommandPoll()
 	}
-	ev := &command_events[command_event_count]
-	n := min(len(s), len(ev.text))
-	copy(ev.text[:n], s)
-	ev.len = u8(n)
-	ev.result_len = 0
-	ev.ok, ev.done = false, false
-	command_event_count += 1
-	return true
-}
-
-CommandEventsCount :: proc() -> int {
-	return command_event_count
-}
-
-// command 取值(只写 result/ok/done 字段)
-CommandEventAt :: proc(i : int) -> ^CommandEvent {
-	if i < 0 || i >= command_event_count {
-		return nil
-	}
-	return &command_events[i]
-}
-
-// 帧尾读回(本模块):已执行事件移除;查询结果打 stdout,失败打原因(stderr)。
-// (UI 内显示待做:命令栏提交即关闭,结果槽先经 stdout 回显)
-CommandEventsReap :: proc() {
-	i := 0
-	for i < command_event_count {
-		ev := &command_events[i]
-		if !ev.done {
-			i += 1
-			continue
-		}
-		if !ev.ok {
-			if ev.result_len > 0 {
-				fmt.eprintfln("your command came early: %s — and left this behind: %s. In Java this would be a CommandInvokerFactoryBean; Odin has no exceptions, so this is the whole story.", string(ev.text[:ev.len]), string(ev.result[:ev.result_len]))
-			} else {
-				fmt.eprintfln("your command came early: %s — and didn't explain itself. A JIT would have blamed deoptimization and printed 300 lines of stack; you get one line.", string(ev.text[:ev.len]))
-			}
-		} else if ev.result_len > 0 {
-			fmt.print(string(ev.result[:ev.result_len]))
-		}
-		n := command_event_count - 1
-		command_events[i] = command_events[n]
-		command_events[n] = {}
-		command_event_count = n
-	}
+	return command_bar.poll_h
 }
 
 // 切换命令栏(全局):开 = 清空编辑状态
@@ -200,7 +140,7 @@ CommandBarWordMove :: proc(dir : int) {
 	}
 }
 
-// 取走输入并清空(执行后调用)
+// 取走输入并清空(丢弃未完成输入:ESC 关栏时调用)
 CommandBarTake :: proc() -> string {
 	s := string(command_bar.input[:command_bar.len])
 	clearBar(&command_bar)
@@ -322,12 +262,37 @@ cmdBarKey :: proc(b : u8) {
 	}
 }
 
-// 取走命令栏输入并提交(异步:入事件队列,command 模块每帧消费;
-// 结果经事件槽回读;失败回显见 CommandEventsReap)。
+// 取走命令栏输入并提交(异步:入本栏信道,command 模块每帧消费;
+// 结果经同一事件槽回读,回显见 CommandBarReap)。
+// 信道拒收 = 不关栏、不清输入 —— 用户的字不能白打。
 execCmdBar :: proc() {
-	cmd := CommandBarTake()
-	if len(cmd) > 0 {
-		PushCommand(cmd)
+	bar := &command_bar
+	cmd := string(bar.input[:bar.len])
+	if len(cmd) > 0 && !PushCommand(CommandBarPoll(), cmd) {
+		// 防御:输入缓冲与信道同宽,当前不可达(不截断 —— 截断 = 执行另一条命令)
+		fmt.eprintfln("command channel refused it: %d bytes, cap is %d. Not truncating — a truncated command is a different command.", len(cmd), MAX_POLL_TEXT)
+		return
 	}
-	ToggleCommandBar() // 提交即关闭(成功/失败回显在结果槽)
+	clearBar(bar)
+	ToggleCommandBar() // 提交即关闭(结果经 CommandBarReap 回显)
+}
+
+// 帧尾回读(本栏拥有结果策略):查询结果打 stdout,失败打原因(stderr)。
+// (UI 内显示待做:提交即关闭,结果槽先经 stdout 回显)
+CommandBarReap :: proc() {
+	for {
+		ev, ok := ReapCommand(CommandBarPoll())
+		if !ok {
+			break
+		}
+		if !ev.ok {
+			if ev.result_len > 0 {
+				fmt.eprintfln("your command came early: %s — and left this behind: %s. In Java this would be a CommandInvokerFactoryBean; Odin has no exceptions, so this is the whole story.", string(ev.text[:ev.len]), string(ev.result[:ev.result_len]))
+			} else {
+				fmt.eprintfln("your command came early: %s — and didn't explain itself. A JIT would have blamed deoptimization and printed 300 lines of stack; you get one line.", string(ev.text[:ev.len]))
+			}
+		} else if ev.result_len > 0 {
+			fmt.print(string(ev.result[:ev.result_len]))
+		}
+	}
 }

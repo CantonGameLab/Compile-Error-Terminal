@@ -4,7 +4,7 @@
 //   2. 会话轮询:auto_close 销毁;全部窗口关闭返回 false
 //   3. 键命令已由 command 模块消费(main 帧序:command.ProcessKeys 先于本入口);
 //      本模块 = 鼠标路由 + 未消费文本路由(bar 可见 → CommandBar;否则 → FeedConsole)
-//   4. 命令事件读回(队列 Result 槽;失败回显)
+//   4. 命令信道回读(本栏 CommandPoll 的结果槽;失败回显)
 package canvas
 
 import mem "../memory"
@@ -17,6 +17,8 @@ Update :: proc() -> bool {
 		fmt.println("all sessions ended. Nothing left to draw. A garbage collector would have stop-the-world'd for 200ms and then collected the wrong session anyway. Post-nut clarity, terminal edition — I'll show myself out.")
 		return false
 	}
+
+	CommandBarReap() // 命令信道回读(本栏 poll;已执行 → 打结果/失败原因)
 
 	SelectionValidate() // 选区自愈(buffer 数据链验证;失效即清,渲染前定稿)
 
@@ -32,7 +34,6 @@ Update :: proc() -> bool {
 		}
 	}
 
-	CommandEventsReap() // 命令事件读回(已执行;失败回显日志)
 
 	return true
 }
