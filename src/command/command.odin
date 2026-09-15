@@ -22,6 +22,10 @@ import "core:strings"
 // 单行 token 上限(超出 = 报错,不静默截断)
 MAX_CMD_TOKENS :: 24
 
+// no-ret 前缀标记:命令串以它开头 = 不产出 ret;缺省 = on-ret。
+// 通用标记,与来源无关(命令栏/配置/OSC 都一样);剥除在 execute.odin 的消费趟。
+NO_RET_MARK :: '-'
+
 // 解析结果判别(按 kind 取用字段;全集与 COMMAND_SPECS 一一对应)
 CommandStringKind :: enum u8 {
 	// 窗口树 / 焦点
@@ -34,6 +38,7 @@ CommandStringKind :: enum u8 {
 	SplitTypeToggle, // 无参数(target 或焦点)
 	Exchange,     // fdir
 	Single,       // mode
+	OscAuth,      // mode(target 或焦点)
 	Count,
 	Info,         // target
 	FocusGet,
@@ -186,6 +191,21 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 			cv.ToggleSingleMode()
 			return true
 		}
+	case .OscAuth:
+		// 授权 = 给该 console 建/销 poll(见 canvas.Console.poll_h);池满 = 授权失败
+		aok, now_on : bool
+		if cmd.mode == .Toggle {
+			aok, now_on = cv.ToggleOscAuthorized(cmd.target)
+		} else {
+			aok, now_on = cv.SetOscAuthorized(cmd.mode == .On, cmd.target)
+		}
+		if !aok {
+			return false
+		}
+		if out != nil {
+			out(now_on ? "osc 信道: on" : "osc 信道: off")
+		}
+		return true
 	case .Count:
 		if out != nil {
 			out(fmt.tprintf("windows: %d", cv.ConsoleCount()))
@@ -225,7 +245,15 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 	case .Launch:
 		return cv.LaunchConsole(cmd.sval, cmd.target)
 	case .Feed:
-		return cv.FeedConsole(transmute([]u8)cmd.sval, cmd.target)
+		// feed = 注入原始按键。而 OSC 载荷物理上带不了控制字节(状态机对 00-1F 是
+		// Ignore,`\r` 会被静默吞掉),所以**只有它的字符串参数**解释转义。
+		// 其它命令的字符串保持字面 —— 否则 `cwd "C:\Users"` 这类路径会被吃掉反斜杠。
+		fbuf : [1024]u8
+		data, dok := UnescapeArg(cmd.sval, fbuf[:])
+		if !dok {
+			return false // 超长:拒收,不静默截断(调用方/信道上会看到失败)
+		}
+		return cv.FeedConsole(data, cmd.target)
 	case .ClearConsole:
 		return cv.ClearConsoleSession(cmd.target)
 	case .Scroll:
@@ -373,7 +401,7 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 					out(fmt.tprintf("cwd(配置默认): %s", def))
 				}
 				if len(sess) == 0 && len(def) == 0 {
-					out("cwd: (都没有 —— 新会话继承 dterm 进程目录)")
+					out("cwd: (都没有 —— 新会话继承 CETerm 进程目录)")
 				}
 			}
 			return true
@@ -736,6 +764,91 @@ focusDirName :: proc(dir : cv.FocusDirection) -> string {
 // 词法 / 参数解析
 // ---------------------------------------------------------------------------
 // 拆分参数:支持 "..." 字符串;返回 tokens(借用 s 内存)与是否溢出(超出即报错)
+// 字符串参数的 C 风格转义解释(仅 feed 用,理由见 .Feed 分支):
+//   \r \n \t \e \0 \\ 以及 \xNN(两位十六进制)
+// 未知转义原样保留(反斜杠 + 该字符),路径类文本不会出意外。
+// 装不下 = 返回 false(不静默截断)。
+// 导出是为了让探针能直接断言:它是"命令串 → 真实按键"的翻译表,错了就是往
+// 用户的 shell 里打错键 —— 和 OscCmdEncode 一样属于不可协商的正确性。
+UnescapeArg :: proc(s : string, out : []u8) -> (data : []byte, ok : bool) {
+	hexDigit :: proc(c : u8) -> int {
+		switch {
+		case c >= '0' && c <= '9':
+			return int(c - '0')
+		case c >= 'a' && c <= 'f':
+			return int(c - 'a') + 10
+		case c >= 'A' && c <= 'F':
+			return int(c - 'A') + 10
+		}
+		return -1
+	}
+	n := 0
+	i := 0
+	for i < len(s) {
+		if n >= len(out) {
+			return out[:n], false
+		}
+		c := s[i]
+		i += 1
+		if c != '\\' || i >= len(s) {
+			out[n] = c
+			n += 1
+			continue
+		}
+		e := s[i]
+		i += 1
+		if e == 'x' || e == 'X' {
+			v, used := 0, 0
+			for used < 2 && i + used < len(s) {
+				d := hexDigit(s[i + used])
+				if d < 0 {
+					break
+				}
+				v = v * 16 + d
+				used += 1
+			}
+			if used > 0 {
+				i += used
+				out[n] = u8(v)
+				n += 1
+				continue
+			}
+		}
+		rep : u8
+		known := true
+		switch e {
+		case 'r':
+			rep = 0x0D
+		case 'n':
+			rep = 0x0A
+		case 't':
+			rep = 0x09
+		case 'e':
+			rep = 0x1B
+		case '0':
+			rep = 0x00
+		case '\\':
+			rep = '\\'
+		case:
+			known = false
+		}
+		if !known {
+			// 未知转义(含 \x 后没有十六进制位):原样保留两个字符
+			out[n] = '\\'
+			n += 1
+			if n >= len(out) {
+				return out[:n], false
+			}
+			out[n] = e
+			n += 1
+			continue
+		}
+		out[n] = rep
+		n += 1
+	}
+	return out[:n], true
+}
+
 parseTokens :: proc(s : string, tokens : ^[MAX_CMD_TOKENS]string) -> (count : int, overflow : bool) {
 	i := 0
 	for i < len(s) {

@@ -8,10 +8,12 @@ import "canvas"
 import "command"
 import "event"
 import "input"
+import "paths"
 import "render"
 import "core:fmt"
 
 main :: proc() {
+	paths.Init() // 资源根:发行版 = exe 同目录的 resource/;开发 = cwd/resource(见 paths 模块)
 	if !render.Init() {
 		fmt.eprintln("render init failed. OpenGL 4.4 in 2026, because Khronos would rather maintain a 2013 spec than admit Vulkan won. No window, no GL, no point. Alacritty renders this fine — in Rust, with 400 crates, and still no tabs.")
 		return
@@ -41,7 +43,7 @@ main :: proc() {
 		ret := canvas.Update() // ② 剩余:鼠标路由/文本(未消费)/树/轮询/事件读回
 		if !ret { 
 			fmt.println("all windows closed")
-			fmt.println("Thank you for using our Compile Error terminal emulator. SAILOR!")
+			fmt.println("Thank you for using CompileErrorTerminal (CETerm). SAILOR!")
 			break
 		}
 		// OS 窗口标题:焦点 console 的应用标题(OSC 0/2);空 = 启动标题

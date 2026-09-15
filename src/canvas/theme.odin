@@ -1,5 +1,5 @@
 // 主题数据:命名主题注册表(NamedTheme 槽位数组)+ 当前激活主题 + 字段级配置。
-// 主题内容(内置 8 套配色)是**外部数据**(resource/themes.dterm,经配置 load 引入);
+// 主题内容(内置 8 套配色)是**外部数据**(resource/themes.ceterm,经配置 load 引入);
 // 代码内只保留 boot_theme(启动兜底:配置未激活任何主题时的显示)。
 // CellStyle.fg/bg 存颜色**引用编码**(见下),渲染期 ResolveColor 解码 →
 // 主题切换零缓冲污染(解析器零主题依赖),256 色固定公式(16-231 cube/232-255 灰度)。
@@ -73,7 +73,7 @@ Theme :: struct {
 }
 
 // ---------------------------------------------------------------------------
-// 命名主题注册表(外部数据段:resource/themes.dterm 经配置 load 写入)
+// 命名主题注册表(外部数据段:resource/themes.ceterm 经配置 load 写入)
 // ---------------------------------------------------------------------------
 MAX_THEME_SLOTS :: 32
 
@@ -90,7 +90,7 @@ themes : mem.GenArray(MAX_THEME_SLOTS, NamedTheme)
 current_theme_h : mem.Handle // 当前激活主题槽;0 = 未激活(GetTheme 返回 boot_theme)
 
 // 代码内唯一保留的配色:启动兜底(配置未激活任何主题时的显示)。
-// 它不是可发布主题 —— 真实配色全部在外部数据里(resource/themes.dterm)。
+// 它不是可发布主题 —— 真实配色全部在外部数据里(resource/themes.ceterm)。
 boot_theme := Theme {
 	fg = 0xD0D0D0,
 	bg = 0x101014,

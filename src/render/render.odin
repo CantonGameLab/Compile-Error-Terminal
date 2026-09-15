@@ -7,6 +7,7 @@ import s3 "vendor:sdl3"
 import gl "vendor:OpenGL"
 import fnt "../font"
 import mem "../memory"
+import paths "../paths"
 import "core:c"
 import "core:fmt"
 import "core:math"
@@ -15,21 +16,21 @@ import "core:strings"
 
 INIT_WINDOW_WIDTH :: 1920
 INIT_WINDOW_HEIGHT :: 1080
-INIT_WINDOW_TITLE :: "dterm demo"
+INIT_WINDOW_TITLE :: "CETerm"
 
 window : ^s3.Window
 gl_context : s3.GLContext
 screen_w, screen_h : f32
 
 // ---------------------------------------------------------------------------
-// 着色器(源码外置 resource/shader/:main.vert / main.frag / background.frag)
+// 着色器(源码外置 <资源根>/shader/:main.vert / main.frag / background.frag;资源根见 paths 模块)
 // ---------------------------------------------------------------------------
 
 program : u32
 main_vs : u32 // 主/背景 pass 共用顶点 shader(main.vert)
 u_screen_size : i32
 
-// 读文件 + 编译 shader(失败 = 0;路径相对工作目录 = src.exe 所在)
+// 读文件 + 编译 shader(失败 = 0;路径相对工作目录 = 可执行文件所在)
 loadShader :: proc(path : string, kind : u32) -> u32 {
 	data, err := os.read_entire_file_from_path(path, context.allocator)
 	if err != nil {
@@ -106,8 +107,8 @@ Init :: proc() -> bool {
 
 	s3.GL_SetSwapInterval(0) // 初始 = 关 vsync(性能观测用);SetVSync 切换
 
-	main_vs = loadShader("resource/shader/main.vert", gl.VERTEX_SHADER)
-	main_fs := loadShader("resource/shader/main.frag", gl.FRAGMENT_SHADER)
+	main_vs = loadShader(paths.Resource("shader/main.vert"), gl.VERTEX_SHADER)
+	main_fs := loadShader(paths.Resource("shader/main.frag"), gl.FRAGMENT_SHADER)
 	program = linkProgram(main_vs, main_fs)
 	if program == 0 {
 		return false

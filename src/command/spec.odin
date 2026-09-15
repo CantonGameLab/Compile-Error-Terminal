@@ -75,6 +75,11 @@ COMMAND_SPECS := [?]CommandSpec {
 		help = "单窗显示模式:焦点窗独占树区(省略参数 = 翻转)",
 	},
 	{
+		name = "osc", alias = "osc-auth", kind = .OscAuth, args = {.Toggle, .None, .None}, target = true,
+		usage = "[on|off] [@id]",
+		help = "授权窗格 console 使用 OSC 999 命令信道(有 poll = 已授权;换程序即失效);授权 = 该程序获得完整命令能力",
+	},
+	{
 		name = "count", alias = "windows", kind = .Count,
 		usage = "",
 		help = "查询窗口数量",
@@ -119,7 +124,7 @@ COMMAND_SPECS := [?]CommandSpec {
 	{
 		name = "feed", kind = .Feed, args = {.Str, .None, .None}, req = 1, target = true,
 		usage = `"<text>" [@id]`,
-		help = "向窗口会话写入输入",
+		help = `向窗口会话写入输入;支持转义 \r \n \t \e \\ \xNN(回车 = feed "\r")`,
 	},
 	{
 		name = "clearconsole", alias = "clearc", kind = .ClearConsole, target = true,

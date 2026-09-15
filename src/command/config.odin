@@ -1,5 +1,6 @@
 // 配置文件 = 命令脚本(一行 = 一条命令,与命令栏同语法):
-//   入口:%APPDATA%\Local\dterm\config.dterm(用户配置)→ resource\config.dterm(保底配置)
+//   入口:%LOCALAPPDATA%\CETerm\config.ceterm(用户配置)→ <资源根>\config.ceterm(保底配置)
+//   资源根 = 可执行文件同目录的 resource/(发行版)/ <cwd>/resource(开发与探针);见 paths 模块
 //   分片:入口用 load "<path>" 引入其它文件;相对路径 = 相对当前文件所在目录
 // 执行 = 逐行顺序执行,不分相位:顺序由配置自己负责(需要窗格的命令写在 page-new 之后)。
 // 行失败 = stderr 报 路径:行号 + 原因并继续(不整体回退:改错一行不该丢全部配置)。
@@ -8,10 +9,10 @@ package command
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import paths "../paths"
 
-CONFIG_USER_DIR :: "dterm"
-CONFIG_USER_NAME :: "config.dterm"
-CONFIG_FALLBACK :: "resource/config.dterm"
+CONFIG_USER_DIR :: "CETerm"
+CONFIG_USER_NAME :: "config.ceterm"
 CONFIG_DEPTH_MAX :: 8 // load 嵌套上限
 
 ConfigStats :: struct {
@@ -37,13 +38,14 @@ LoadConfig :: proc() -> (stats : ConfigStats) {
 		}
 	}
 	if data == nil {
-		if d, err := os.read_entire_file_from_path(CONFIG_FALLBACK, context.allocator); err == nil {
-			data, path = d, strings.clone(CONFIG_FALLBACK)
+		fallback := paths.Resource("config.ceterm") // 借用:本分支内用完即弃
+		if d, err := os.read_entire_file_from_path(fallback, context.allocator); err == nil {
+			data, path = d, strings.clone(fallback)
 			stats.fallback = true
 		}
 	}
 	if data == nil {
-		fmt.eprintln("config: no config file, no fallback at", CONFIG_FALLBACK, ". Alacritty would have handed you 300 lines of TOML; its build would have handed you 400 crates. You get nothing. F2 won't save you.")
+		fmt.eprintln("config: no config file, no fallback at", paths.Resource("config.ceterm"), ". Alacritty would have handed you 300 lines of TOML; its build would have handed you 400 crates. You get nothing. F2 won't save you.")
 		return
 	}
 	defer delete(data)
@@ -115,14 +117,15 @@ configOut :: proc(msg : string) {
 	fmt.println(msg)
 }
 
-// 用户配置路径:%APPDATA%\Local\dterm\config.dterm(无 APPDATA 环境变量 = 不可用)
+// 用户配置路径:%LOCALAPPDATA%\CETerm\config.ceterm(无 LOCALAPPDATA 环境变量 = 不可用)
+// 用 LOCALAPPDATA(本机数据)而不是 APPDATA(Roaming):配置属于本机。
 configUserPath :: proc() -> (path : string, ok : bool) {
-	appdata := os.get_env("APPDATA", context.allocator)
-	if len(appdata) == 0 {
+	local_appdata := os.get_env("LOCALAPPDATA", context.allocator)
+	if len(local_appdata) == 0 {
 		return "", false
 	}
-	defer delete(appdata)
-	return fmt.aprintf("%s\\Local\\%s\\%s", appdata, CONFIG_USER_DIR, CONFIG_USER_NAME), true
+	defer delete(local_appdata)
+	return fmt.aprintf("%s\\%s\\%s", local_appdata, CONFIG_USER_DIR, CONFIG_USER_NAME), true
 }
 
 // 相对路径 → 相对 dir 解析(绝对路径原样:根斜杠 / 盘符开头)。

@@ -277,22 +277,27 @@ execCmdBar :: proc() {
 	ToggleCommandBar() // 提交即关闭(结果经 CommandBarReap 回显)
 }
 
-// 帧尾回读(本栏拥有结果策略):查询结果打 stdout,失败打原因(stderr)。
-// (UI 内显示待做:提交即关闭,结果槽先经 stdout 回显)
+// 帧尾回读(本栏拥有结果策略):Ok 打 stdout,Err 打原因(stderr),None = no-ret 不回显。
+// (UI 内显示待做:提交即关闭,ret 先经 stdout 回显)
 CommandBarReap :: proc() {
 	for {
 		ev, ok := ReapCommand(CommandBarPoll())
 		if !ok {
 			break
 		}
-		if !ev.ok {
-			if ev.result_len > 0 {
-				fmt.eprintfln("your command came early: %s — and left this behind: %s. In Java this would be a CommandInvokerFactoryBean; Odin has no exceptions, so this is the whole story.", string(ev.text[:ev.len]), string(ev.result[:ev.result_len]))
+		switch ev.ret_status {
+		case .None:
+			// 命令串标了 no-ret:本次提交明确不要回显
+		case .Err:
+			if ev.ret_len > 0 {
+				fmt.eprintfln("your command came early: %s — and left this behind: %s. In Java this would be a CommandInvokerFactoryBean; Odin has no exceptions, so this is the whole story.", string(ev.text[:ev.len]), string(ev.ret[:ev.ret_len]))
 			} else {
 				fmt.eprintfln("your command came early: %s — and didn't explain itself. A JIT would have blamed deoptimization and printed 300 lines of stack; you get one line.", string(ev.text[:ev.len]))
 			}
-		} else if ev.result_len > 0 {
-			fmt.print(string(ev.result[:ev.result_len]))
+		case .Ok:
+			if ev.ret_len > 0 {
+				fmt.print(string(ev.ret[:ev.ret_len]))
+			}
 		}
 	}
 }

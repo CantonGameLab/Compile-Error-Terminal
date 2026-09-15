@@ -17,6 +17,7 @@ import "core:math"
 import "core:os"
 import "core:strings"
 import mem "../memory"
+import paths "../paths"
 
 // ---------------------------------------------------------------------------
 // 对外数据
@@ -407,7 +408,9 @@ resolveFontPath :: proc(path_or_name : string) -> (path : string, is_alloc : boo
 // 系统字体目录索引:按文件内 family 名(轻量读头,不读全文件)建一次;
 // 解决"文件在 Fonts 目录但未登记注册表"的字体族解析(常见于手动安装)。
 // ---------------------------------------------------------------------------
-FONT_INDEX_MAX :: 512
+// 索引容量:三个目录的字体文件数合计(系统目录 ~565 + 用户级 ~60 + 内置 ~52)。
+// 上限只用于界定内存;取小了会在扫"系统目录"时就截断,后面的用户级/内置目录直接扫不进去。
+FONT_INDEX_MAX :: 2048
 
 font_index_names : [FONT_INDEX_MAX]string // 规范化 family 名(堆分配)
 font_index_paths : [FONT_INDEX_MAX]string // 完整路径(堆分配)
@@ -421,11 +424,18 @@ buildFontIndex :: proc() {
 	}
 	font_index_built = true
 	scanFontDir(SYSTEM_FONT_DIR)
-	// 项目内置字体(resource/font/<FamilyDir>):未安装到系统的机器同样可解析
-	if entries, err := os.read_directory_by_path("resource/font", -1, context.allocator); err == nil {
+	// 用户级字体目录:Nerd Fonts 安装器默认装到用户级(注册表登记在 HKCU,
+	// 而 registryFontPath 只读 HKLM)→ 靠本目录按"文件内 family 名"索引兜住。
+	if local := os.get_env("LOCALAPPDATA", context.allocator); len(local) > 0 {
+		defer delete(local)
+		scanFontDir(fmt.tprintf("%s\\Microsoft\\Windows\\Fonts", local))
+	}
+	// 项目内置字体(<资源根>/font/<FamilyDir>):未安装到系统的机器同样可解析
+	font_root := paths.Resource("font") // 借用:下方 tprintf 自行分配,不会覆盖它
+	if entries, err := os.read_directory_by_path(font_root, -1, context.allocator); err == nil {
 		for e in entries {
 			if e.type == .Directory {
-				scanFontDir(fmt.tprintf("resource/font/%s", e.name))
+				scanFontDir(fmt.tprintf("%s/%s", font_root, e.name))
 			}
 		}
 		os.file_info_slice_delete(entries, context.allocator)

@@ -2,19 +2,17 @@
 // 再经用户片段 shader 变换输出(字形/光标/UI 不受影响,在其上直接绘制)。
 // 背景恒定走 FBO 路径(无"纯色模式"开关);要纯色背景 = 改 background.frag
 // (直接输出 uBg 即可),或 SetBackgroundShader 换成自定义源码。
-// 默认加载 resource/shader/background.frag(完整 GLSL,自带 main/声明);
+// 默认加载 <资源根>/shader/background.frag(完整 GLSL,自带 main/声明);
 // 源码编译失败保留旧 shader(自愈),文件缺失 = 背景批直接上屏兜底。
 package render
 
 import gl "vendor:OpenGL"
 import cv "../canvas"
+import paths "../paths"
 import "core:c"
 import "core:fmt"
 import "core:os"
 import "core:strings"
-
-// 默认背景 shader 文件(相对 src.exe 工作目录)
-BG_SHADER_PATH :: "resource/shader/background.frag"
 
 bg_shader_src : string // 当前源码(文件内容/Set 传入)
 bg_program : u32 // 0 = 未编译
@@ -26,9 +24,10 @@ bg_tex_w, bg_tex_h : u32
 
 // 读取默认背景 shader 文件并编译(render.Init 调用;失败 = 打印警告)
 InitBackgroundShader :: proc() -> bool {
-	data, err := os.read_entire_file_from_path(BG_SHADER_PATH, context.allocator)
+	path := paths.Resource("shader/background.frag")
+	data, err := os.read_entire_file_from_path(path, context.allocator)
 	if err != nil {
-		fmt.eprintln("we can't find a correct background shader in given path! so YOU should handle it! it is not MY job to deal with that!", BG_SHADER_PATH)
+		fmt.eprintln("we can't find a correct background shader in given path! so YOU should handle it! it is not MY job to deal with that!", path)
 		return false
 	}
 	defer delete(data)

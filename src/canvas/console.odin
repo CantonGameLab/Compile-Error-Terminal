@@ -29,6 +29,12 @@ Console :: struct {
 	parser : Parser,
 	vt : VtState,
 
+	// OSC 命令信道(见 commandpipe.odin):持有 poll 句柄即"已授权"(0 = 未授权,
+	// 999 当未知 OSC 忽略)。授权 = 命令 `osc on|off` 的建/销;会话重建即失效,
+	// 所以换程序必然重新授权(释放点:consoleInitSession / consoleClearSession /
+	// DestroyConsole 三处,少一处就是池槽泄漏 + 悬空授权)。
+	poll_h : mem.Handle,
+
 	term_buffer_ids : [MAX_BUFFERS_PER_CONSOLE]mem.Handle, // ids[0] = 主屏
 	term_buffer_count : u32,
 	active_term_buffer_id : mem.Handle, // 当前渲染/写入的页;0 = 未登记
@@ -173,6 +179,7 @@ DestroyConsole :: proc(h : mem.Handle) {
 	for i in 0 ..< int(console.term_buffer_count) {
 		DestroyTermBuffer(console.term_buffer_ids[i])
 	}
+	ReleaseCommandPoll(console.poll_h) // 信道随 console 一起消失
 	mem.Free(&consoles, h)
 }
 
@@ -209,16 +216,22 @@ consoleClearSession :: proc(console_h : mem.Handle) -> bool {
 	console.vt = VtState {}
 	console.cursor_row, console.cursor_col = 0, 0
 	releaseConsoleAppState(console) // 会话没了:应用标题/目录一并失效
+	ReleaseCommandPoll(console.poll_h) // 会话清空 = 授权撤销(授权绑定在对端程序上)
+	console.poll_h = {}
 	return true
 }
 
 // 会话初始化(建 console 与复用 console 共用):重置视口/解析状态 + 建主屏 + 绑 conpty。
 // 失败时 console 处于"无 buffer"空态(调用方负责销毁或重试)。
+// 这里是"这个 console 里开始了一个新程序"的唯一入口(CreateConsole 与
+// consoleStartSession 都走它),所以授权在其上重置 —— 换程序必然重新授权。
 consoleInitSession :: proc(console_h : mem.Handle, rows, cols : u16, conpty_handle : mem.Handle) -> bool {
 	console := GetConsole(console_h)
 	if console == nil {
 		return false
 	}
+	ReleaseCommandPoll(console.poll_h) // 旧程序的授权不继承给新程序
+	console.poll_h = {}
 	tb_h, tb_ok := CreateTermBuffer()
 	if !tb_ok {
 		return false

@@ -1,4 +1,4 @@
-# dterm 编码规范(以 DOD 为核心)
+# CETerm 编码规范(以 DOD 为核心)
 
 > 数据导向设计(Data-Oriented Design):
 > **先想数据怎么存、怎么被遍历,再写操作它的代码。**
@@ -121,7 +121,7 @@
 ### 3.3 userapi 分层(对外接口 vs 内部代码)
 
 - **userapi(`Set<域>`/`Get<域>`/`Reset<域>` 家族)是给用户的接口**:命令栏字符串命令、快捷键绑定、配置段落(main.initWindows = 配置文件立场)直接使用,必须保留。
-- **程序内部代码不得绕 userapi**:内部读写一律 `GetXxx()` 指针直接操作数据;内部调用 userapi 的 Set 系列 = 滥用(键位/主题/启动/字体等**用户配置一律写在配置文件 `resource/config.dterm`,经指令行生效**,不在代码里循环调 Set 系列)。
+- **程序内部代码不得绕 userapi**:内部读写一律 `GetXxx()` 指针直接操作数据;内部调用 userapi 的 Set 系列 = 滥用(键位/主题/启动/字体等**用户配置一律写在配置文件 `resource/config.ceterm`,经指令行生效**,不在代码里循环调 Set 系列)。
 - 唯一例外:main 的 initWindows 类初始化函数(以"配置者"身份调用 userapi,语义 = 用户配置)。
 
 ### 3.4 命名

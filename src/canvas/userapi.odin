@@ -409,6 +409,43 @@ ClearConsoleSession :: proc(id : mem.Handle = {}) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// OSC 命令信道授权(命令 `osc on|off|toggle`)
+// ---------------------------------------------------------------------------
+// 授权 = 给该 console 建一个 CommandPoll;有 poll 即已授权,没有就不认 OSC 999。
+// 所以"授权"不留独立字段 —— 状态就在句柄里(见 CODING_STYLE §4.3)。
+// 目标 = id(或焦点)窗格的 console;空窗格(无 console)= 失败。
+// 失败情形:空窗格、池满(信道上限 = MAX_COMMAND_POLLS-1,命令栏自占一条)。
+// 返回 (成功, 结果状态);已授权时再 `on` 是幂等成功。
+SetOscAuthorized :: proc(on : bool, id : mem.Handle = {}) -> (ok : bool, now_on : bool) {
+	console := NodeConsole(resolveWindow(id))
+	if console == nil {
+		return false, false
+	}
+	if on {
+		if console.poll_h.id == 0 {
+			h := CreateCommandPoll()
+			if h.id == 0 {
+				return false, false
+			}
+			console.poll_h = h
+		}
+		return true, true
+	}
+	ReleaseCommandPoll(console.poll_h)
+	console.poll_h = {}
+	return true, false
+}
+
+// 翻转授权(命令无参数时用);返回 (成功, 结果状态)
+ToggleOscAuthorized :: proc(id : mem.Handle = {}) -> (ok : bool, now_on : bool) {
+	console := NodeConsole(resolveWindow(id))
+	if console == nil {
+		return false, false
+	}
+	return SetOscAuthorized(console.poll_h.id == 0, id)
+}
+
+// ---------------------------------------------------------------------------
 // 会话(Console 应用)
 // ---------------------------------------------------------------------------
 // launch 语义:在 id(或焦点)窗格启动一个 console 应用。

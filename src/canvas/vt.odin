@@ -51,11 +51,14 @@ vtDbg :: proc(console_h : mem.Handle, msg : string) {
 // DA2 应答里的终端版本号
 DA2_VERSION :: 100
 
+// 该 console 的一趟 I/O:先回写上帧命令的应答,再拉取并解析输出。
+// 应答回写必须放在最前 —— 本帧无输出时下面的早退会把它整趟跳掉。
 UpdateConsole :: proc(console_h : mem.Handle) {
 	console := GetConsole(console_h)
 	if console == nil {
 		return
 	}
+	oscCmdReap(console_h) // 命令应答回写(stdin);无在途 ret 时是空转
 	data := ct.GetReadWriteData(console.conpty_handle)
 	if data == nil {
 		return
@@ -187,6 +190,8 @@ oscDispatch :: proc(console_h : mem.Handle) {
 		oscSetCwd(console_h, payload)
 	case 52: // 剪贴板:52;[c|p|s0..s7];<base64 | ?>
 		oscClipboard(console_h, payload)
+	case OSC_CMD_NUM: // 999:子进程命令信道(见下方"OSC 999"段)
+		oscCmdRequest(console_h, payload)
 	}
 }
 
@@ -354,6 +359,126 @@ oscReply :: proc(console_h : mem.Handle, msg : string) {
 	k += copy(buf[k:], msg[:n])
 	k += copy(buf[k:], "\x1b\\")
 	ct.WriteConptyInput(console.conpty_handle, buf[:k])
+}
+
+// ---------------------------------------------------------------------------
+// OSC 999:子进程命令信道
+// ---------------------------------------------------------------------------
+// 请求(程序 stdout):ESC ] 999 ; [-] <命令串> ST   '-' = no-ret,缺省 on-ret
+// 应答(程序 stdin ):ESC ] 999 ; > <ok|err> ; <body> ST
+//
+// 授权 = Console.poll_h 非 0(命令 `osc on|off` 建/销 poll);未授权时 999 等同于
+// 未知 OSC 号码,静默忽略 —— 未授权的程序连一个字节都塞不进用户的 stdin。
+//
+// 分工:ret 的**内容**(状态 + 自然文本)由 command 产出;ret 的**线上编码**
+// (转义 + 信封)归本层 —— 写入 stdin 这件事发生在这里,防注入守卫必须落在
+// 唯一的写入点,否则迟早漏一处。
+
+OSC_CMD_NUM :: 999
+OSC_CMD_DIR :: '>' // 方向标记:此载荷是应答,不是请求
+OSC_CMD_TRUNC :: "[truncated]"
+
+// 单字节转义('\' 与 0A/0D/09 转义成两字符);0 = 无需转义,由调用方决定丢弃或原样。
+OSC_CMD_ESC :: proc(b : u8) -> u8 {
+	switch b {
+	case '\\':
+		return '\\'
+	case 0x0A:
+		return 'n'
+	case 0x0D:
+		return 'r'
+	case 0x09:
+		return 't'
+	}
+	return 0
+}
+
+// 信道编码:状态 + body → 线上载荷(单行、纯可打印)。返回写入 out 的长度。
+// body 空 = 占位符 '?'(让字段数恒定,且与 no-ret 区分开 —— no-ret 根本不产出 ret)。
+//
+// 为什么只放行 20-7E 与 80-FF:应答写进的是 stdin,那是**键盘输入流**,
+// 每个字节都是"按键"。放行控制字节 = 终端替攻击者按键:0A 会被 shell 当回车执行、
+// 03 = Ctrl-C、04 = EOF、7F = 退格、1B 能伪造序列。
+// 导出是为了让探针能直接断言这条不变式(它是唯一的防注入守卫)。
+OscCmdEncode :: proc(status : RetStatus, body : []byte, out : []byte) -> int {
+	k := 0
+	k += copy(out[k:], status == .Err ? ">err;" : ">ok;")
+	if len(body) == 0 {
+		out[k] = '?'
+		return k + 1
+	}
+	// 截 body 绝不截 framing:半条序列会让对端解析器卡死
+	limit := len(out) - len(OSC_CMD_TRUNC)
+	truncated := false
+	for i := 0; i < len(body) && !truncated; i += 1 {
+		b := body[i]
+		if esc := OSC_CMD_ESC(b); esc != 0 {
+			if k + 2 > limit {
+				truncated = true
+				continue
+			}
+			out[k], out[k + 1] = '\\', esc
+			k += 2
+			continue
+		}
+		if b < 0x20 || b == 0x7F {
+			continue // 不可打印:丢弃(那不是内容,是按键)
+		}
+		if k + 1 > limit {
+			truncated = true
+			continue
+		}
+		out[k] = b
+		k += 1
+	}
+	if truncated {
+		k += copy(out[k:], OSC_CMD_TRUNC)
+	}
+	return k
+}
+
+// 回写一条应答到子进程 stdin(信道层错误也走它:状态 Err + 原因)
+oscCmdReply :: proc(console_h : mem.Handle, status : RetStatus, body : []byte) {
+	payload : [OSC_BUFFER]u8
+	k := copy(payload[:], "999;")
+	k += OscCmdEncode(status, body, payload[k:])
+	oscReply(console_h, string(payload[:k]))
+}
+
+// 收到一条请求:授权 → 方向标记 → 长度 → 入本 console 的信道
+oscCmdRequest :: proc(console_h : mem.Handle, payload : []byte) {
+	console := GetConsole(console_h)
+	if console == nil || console.poll_h.id == 0 {
+		return // 未授权:当未知 OSC 号码忽略,连"被拒"都不回
+	}
+	if len(payload) == 0 || payload[0] == OSC_CMD_DIR {
+		return // 空载荷 / 回声回来的应答 —— 环路熔断点
+	}
+	if len(payload) > MAX_POLL_TEXT {
+		oscCmdReply(console_h, .Err, transmute([]byte)string("请求过长"))
+		return
+	}
+	if !PushCommand(console.poll_h, string(payload)) {
+		oscCmdReply(console_h, .Err, transmute([]byte)string("信道忙")) // poll 满
+	}
+}
+
+// 帧内一趟:把已执行完的 ret 回写子进程 stdin(ret_status == None = no-ret,跳过)
+oscCmdReap :: proc(console_h : mem.Handle) {
+	console := GetConsole(console_h)
+	if console == nil {
+		return
+	}
+	for {
+		ev, ok := ReapCommand(console.poll_h)
+		if !ok {
+			return
+		}
+		if ev.ret_status == .None {
+			continue // no-ret:整条跳过,一个字节都不写
+		}
+		oscCmdReply(console_h, ev.ret_status, ev.ret[:ev.ret_len])
+	}
 }
 
 indexByte :: proc(s : []byte, b : u8) -> int {
