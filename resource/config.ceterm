@@ -19,11 +19,11 @@ theme tango-dark
 # theme-set "mine" tab_active_bg "#101014"
 # theme mine
 default-launch "zsh" "FiraCode Nerd Font Mono" 22
-vsync on
+vsync off
 borderless off
 bgshader
 
-cwd "C://Users/GroupTheory"
+cwd "C:/Users/GroupTheory"
 
 # ---- 焦点(Alt + HJKL)----
 bind alt+h "focus left"
@@ -36,6 +36,16 @@ bind alt+shift+h "split left"
 bind alt+shift+l "split right"
 bind alt+shift+k "split up"
 bind alt+shift+j "split down"
+
+# ---- 旋转分割轴(Alt+C;焦点窗格所在的分割,左右 ⇄ 上下)----
+bind alt+c "splittype"
+
+# ---- OSC 999 命令信道(子进程指令)----
+# 授权有意只走命令栏,不给按键:误触 = 把完整命令能力交给那个窗格里的程序。
+#   osc on     授权焦点窗格   osc off  撤销   osc  翻转(可加 @id 指定窗格)
+# 授权 = 给该 console 建一条命令信道;换程序(重开会话)即失效,需重新授权。
+# 程序侧:printf '\033]999;cwd\033\\' 发请求;带 '-' 前缀则不要返回。
+#         应答从 stdin 读:ESC ] 999 ; > ok ; <body> ESC \
 
 # ---- 交换窗口内容(Ctrl+Shift + HJKL)----
 bind ctrl+shift+h "exchange left"

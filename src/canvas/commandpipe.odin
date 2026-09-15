@@ -18,6 +18,7 @@ import mem "../memory"
 
 MAX_POLL_TEXT :: 512 // 单条命令字符串上限(与命令栏输入缓冲同宽)
 MAX_COMMAND_POLLS :: 32 // poll 池容量(槽 0 保留,有效 MAX_COMMAND_POLLS-1)
+MAX_RET :: 4096 // 单条 ret 上限(查询类命令的输出预算;超了要自己说,不许静默丢)
 
 // 命令产生结果的三态。取代"ok 布尔 + 结果非空"的组合:
 //   None = 不产生 ret(请求标了 no-ret)→ 消费者跳过,不写任何字节;恒有 ret_len == 0
@@ -35,7 +36,7 @@ CommandEvent :: struct {
 	text : [MAX_POLL_TEXT]u8, // 待执行命令字符串(含 no-ret 前缀标记;由 command 剥)
 	len : u16,
 	ret_status : RetStatus, // command 写;消费者按它决定动不动
-	ret : [4096]u8, // 命令输出(自然文本,可多行;线上编码由 canvas 做)
+	ret : [MAX_RET]u8, // 命令输出(自然文本,可多行;线上编码由 canvas 做)
 	ret_len : u16,
 }
 

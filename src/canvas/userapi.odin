@@ -749,6 +749,18 @@ ConsoleCount :: proc() -> int {
 	return count
 }
 
+// 取 id(或焦点)窗格**当前缓冲区**第 n 行文本(n 从缓冲区最上面数,0-based)。
+// 文本写进 buf(借用,调用期间有效);末尾空白已裁。false = 无窗格/无会话/越界。
+// 渲染细节(宽字符续列、行尾空白)归 TermBuffer 自己,见 buffer.odin。
+// 配套命令:head。
+ConsoleLineText :: proc(n : int, buf : []u8, id : mem.Handle = {}) -> (text : string, ok : bool) {
+	console := NodeConsole(resolveWindow(id))
+	if console == nil {
+		return "", false
+	}
+	return TermBufferLineText(console.active_term_buffer_id, n, buf)
+}
+
 // 窗格信息快照(派生量按值返回,同 fnt.GetMetrics 的做法;font_name 借用 console
 // 持有的字符串,console 销毁即失效 —— 只读展示用)。空窗格 = has_console false。
 ConsoleInfo :: struct {

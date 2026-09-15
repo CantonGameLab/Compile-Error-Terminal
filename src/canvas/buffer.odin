@@ -117,6 +117,40 @@ TermBufferClear :: proc(h : mem.Handle) {
 	SelectionClear() // 内容全没了,选区同步失效
 }
 
+// 取第 n 行(n 从缓冲区最上面数,0-based)的文本,写进 buf(借用,调用期间有效)。
+// 宽字符**本体**与普通字符走同一条路;只跳过它的**续列**(cp == 0 且 wide = true)
+// —— 那一格不是空白格,是前一个字的第二列,当空格用会 dump 出「中 文」。
+// 行尾空白裁剪(终端行是整行填充的)。false = 越界或无缓冲区。
+TermBufferLineText :: proc(tb_h : mem.Handle, n : int, buf : []u8) -> (text : string, ok : bool) {
+	tb := GetTermBuffer(tb_h)
+	if tb == nil || n < 0 || n >= len(tb.lines) {
+		return "", false
+	}
+	line := tb.lines[n]
+	k := 0
+	for c in line.cells {
+		if c.cp == 0 {
+			if c.wide {
+				continue // 宽字符续列:占列,无独立字符
+			}
+			if k >= len(buf) {
+				break
+			}
+			buf[k] = ' '
+			k += 1
+			continue
+		}
+		if k + 4 > len(buf) {
+			break // 一个 rune 最多 4 字节:放不下就停,不写半个字符
+		}
+		k += runeToUtf8(c.cp, buf[k:])
+	}
+	for k > 0 && buf[k - 1] == ' ' {
+		k -= 1 // 行尾空白 = 整行填充的产物,不是内容
+	}
+	return string(buf[:k]), true
+}
+
 // 折行一次:光标下移/滚动,列归 0。调用方保证 pending 语义由自己处理
 vtWrapOnce :: proc(console_h : mem.Handle) {
 	console := GetConsole(console_h)

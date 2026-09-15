@@ -94,6 +94,16 @@ COMMAND_SPECS := [?]CommandSpec {
 		usage = "",
 		help = "查询焦点窗口 id",
 	},
+	{
+		name = "size", kind = .ConsoleSize, target = true,
+		usage = "[@id]",
+		help = "查询窗格尺寸(cols x rows)",
+	},
+	{
+		name = "head", kind = .Head, args = {.I32, .None, .None}, req = 1, target = true,
+		usage = "<n> [@id]",
+		help = "取缓冲区最上面 n 行的文本(每行一条,行尾空白已裁;超 ret 容量则补一行 [truncated])",
+	},
 
 	// ---- 字体 / 会话 ----
 	{

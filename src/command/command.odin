@@ -42,6 +42,8 @@ CommandStringKind :: enum u8 {
 	Count,
 	Info,         // target
 	FocusGet,
+	ConsoleSize,  // target
+	Head,         // ival(行数)+ target
 	// 字体 / 会话
 	Font,         // sval + fval
 	FontSize,     // fval
@@ -127,14 +129,6 @@ sub_commands : mem.GenArray(MAX_SUB_COMMANDS, ParsedCommand)
 Update :: proc() {
 	ProcessKeys()
 	processCommandEvents()
-}
-
-// 执行命令字符串;查询类命令的结果经 out 回调回传(控制台/配置加载显示用)。
-// 失败时 out 也收到失败原因(命令栏据此显示)。返回 false = 语法错误或执行失败。
-ExecuteCommandString :: proc(s : string, out : proc(msg : string) = nil) -> bool {
-	errbuf : [256]u8
-	_, ok := executeString(s, errbuf[:], out)
-	return ok
 }
 
 // 解析 + 执行 + 释放子命令槽(解析失败时把原因经 out 回传)
@@ -232,6 +226,19 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 			out(fmt.tprintf("focus: %d", cv.GetFocusWindow().id))
 		}
 		return true
+	case .ConsoleSize:
+		info, sok := cv.GetConsoleInfo(cmd.target)
+		if !sok {
+			return false
+		}
+		if out != nil {
+			out(fmt.tprintf("size: %dx%d", info.cols, info.rows))
+		}
+		return true
+	case .Head:
+		// 缓冲区最上面数前 n 行。ret 容量有限(MAX_RET),输出装不下就停并补一行
+		// [truncated] —— 调用方问 x 行,要么拿到 x 行,要么明确知道被截了。
+		return headLines(cmd.ival, cmd.target, out)
 
 	// ---- 字体 / 会话 ----
 	case .Font:
@@ -456,6 +463,34 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 		return true
 	}
 	return false
+}
+
+// head 输出被 ret 容量截断时的尾行标记(见 headLines)
+HEAD_TRUNC :: "[truncated]"
+
+// 取缓冲区最上面 n 行的文本,每行一次 out。
+// 预算 = MAX_RET:装不下就停并补一行 [truncated] —— 调用方问 x 行,要么拿到 x 行,
+// 要么明确知道被截了(静默丢会让"输出 x 行"这个量化变成假的)。
+// 越界(要的比有的多)不算错:给多少算多少。
+headLines :: proc(n : int, target : mem.Handle, out : proc(msg : string)) -> bool {
+	if out == nil || n <= 0 {
+		return true
+	}
+	linebuf : [1024]u8
+	used := 0
+	for i in 0 ..< n {
+		text, ok := cv.ConsoleLineText(i, linebuf[:], target)
+		if !ok {
+			break // 没有更多行了
+		}
+		if used + len(text) + 1 > cv.MAX_RET - len(HEAD_TRUNC) - 1 {
+			out(HEAD_TRUNC) // 每条 out 末尾还会补一个 '\n',所以留出它的位置
+			return true
+		}
+		out(text)
+		used += len(text) + 1
+	}
+	return true
 }
 
 // 焦点(或 target)窗格 console 的行数;无 console 返回 0(翻页/滚动安全空转)
