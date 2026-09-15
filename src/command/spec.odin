@@ -102,7 +102,7 @@ COMMAND_SPECS := [?]CommandSpec {
 	{
 		name = "head", kind = .Head, args = {.I32, .None, .None}, req = 1, target = true,
 		usage = "<n> [@id]",
-		help = "取缓冲区最上面 n 行的文本(每行一条,行尾空白已裁;超 ret 容量则补一行 [truncated])",
+		help = "取面板(视口)从最上面数前 n 行的文本(每行一条,行尾空白已裁;超出面板行数 = 给多少算多少)",
 	},
 
 	// ---- 字体 / 会话 ----

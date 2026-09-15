@@ -131,19 +131,45 @@ Update :: proc() {
 	processCommandEvents()
 }
 
-// 解析 + 执行 + 释放子命令槽(解析失败时把原因经 out 回传)
-executeString :: proc(s : string, errbuf : []u8, out : proc(msg : string) = nil) -> (err : string, ok : bool) {
+// 命令输出缓冲(包级复用,和 config_resolve_buf / update_scratch 同一种做法)。
+// 返回值借用它 —— 只在到下一次 ExecuteCommand / executeString 之前有效。
+// 不要跨调用持有;也不要在一次执行内部嵌套调用后还指望外层的 ret 存活。
+ret_buf : [cv.MAX_RET]u8
+ret_len : int
+
+// 追加一条输出(每条的末尾补 '\n',所以多行 ret 以 '\n' 收尾)。
+// 不复用 out 回调:缓冲有界,直接写就行,调用方每次都重置。
+retWrite :: proc(msg : string) {
+	space := len(ret_buf) - ret_len
+	if space <= 0 {
+		return
+	}
+	n := min(len(msg), space)
+	copy(ret_buf[ret_len:], msg[:n])
+	ret_len += n
+	if ret_len < len(ret_buf) {
+		ret_buf[ret_len] = '\n'
+		ret_len += 1
+	}
+}
+
+// 解析 + 执行 + 释放子命令槽;ret = 产出文本(可多行,失败原因也在里面)。
+// ret 借用包级缓冲(见上),ok = 成败。
+executeString :: proc(s : string, errbuf : []u8) -> (ret : string, ok : bool) {
+	ret_len = 0
 	cmd, perr, pok := ParseCommandStringEx(s, errbuf)
 	if !pok {
-		if out != nil {
-			out(perr)
-		}
-		return perr, false
+		retWrite(perr)
+		return string(ret_buf[:ret_len]), false
 	}
 	defer if cmd.sub.id != 0 {
 		mem.Free(&sub_commands, cmd.sub)
 	}
-	return "", ExecuteCommand(cmd, out)
+	ok = execCmd(cmd)
+	if !ok && ret_len == 0 {
+		retWrite("执行失败") // ok=false 必有原因,消费者不必再兜底
+	}
+	return string(ret_buf[:ret_len]), ok
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +177,17 @@ executeString :: proc(s : string, errbuf : []u8, out : proc(msg : string) = nil)
 // ---------------------------------------------------------------------------
 // 单窗模式(Single)的树/焦点/尺寸禁用规则在 canvas 域边界(userapi 内 singleGuard)
 // 统一判定:命令拦不拦,userapi 自己按当前页语义拒绝。
-ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> bool {
+// ret 产出直接进包级缓冲(retWrite),不经回调 —— 调用方拿返回值即可。
+ExecuteCommand :: proc(cmd : ParsedCommand) -> (ret : string, ok : bool) {
+	ret_len = 0
+	ok = execCmd(cmd)
+	if !ok && ret_len == 0 {
+		retWrite("执行失败")
+	}
+	return string(ret_buf[:ret_len]), ok
+}
+
+execCmd :: proc(cmd : ParsedCommand) -> bool {
 	switch cmd.kind {
 	// ---- 窗口树 / 焦点 ----
 	case .Split:
@@ -196,49 +232,40 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 		if !aok {
 			return false
 		}
-		if out != nil {
-			out(now_on ? "osc 信道: on" : "osc 信道: off")
-		}
+		retWrite(now_on ? "osc 信道: on" : "osc 信道: off")
 		return true
 	case .Count:
-		if out != nil {
-			out(fmt.tprintf("windows: %d", cv.ConsoleCount()))
-		}
+		retWrite(fmt.tprintf("windows: %d", cv.ConsoleCount()))
 		return true
 	case .Info:
 		info, ok := cv.GetConsoleInfo(cmd.target)
 		if !ok {
 			return false
 		}
-		if out != nil {
-			if !info.has_console {
-				out(fmt.tprintf("window %d  空窗格  factor %.2f", info.node.id, info.split_factor))
-			} else {
-				out(fmt.tprintf("window %d  font %s %.0f  %s %dx%d  review %d  factor %.2f",
-					info.node.id, info.font_name, info.font_size,
-					info.has_session ? "session" : "no-session",
-					info.cols, info.rows, info.review_line, info.split_factor))
-			}
+		if !info.has_console {
+			retWrite(fmt.tprintf("window %d  空窗格  factor %.2f", info.node.id, info.split_factor))
+		} else {
+			retWrite(fmt.tprintf("window %d  font %s %.0f  %s %dx%d  review %d  factor %.2f",
+				info.node.id, info.font_name, info.font_size,
+				info.has_session ? "session" : "no-session",
+				info.cols, info.rows, info.review_line, info.split_factor))
 		}
 		return true
 	case .FocusGet:
-		if out != nil {
-			out(fmt.tprintf("focus: %d", cv.GetFocusWindow().id))
-		}
+		retWrite(fmt.tprintf("focus: %d", cv.GetFocusWindow().id))
 		return true
 	case .ConsoleSize:
 		info, sok := cv.GetConsoleInfo(cmd.target)
 		if !sok {
 			return false
 		}
-		if out != nil {
-			out(fmt.tprintf("size: %dx%d", info.cols, info.rows))
-		}
+		retWrite(fmt.tprintf("size: %dx%d", info.cols, info.rows))
 		return true
 	case .Head:
-		// 缓冲区最上面数前 n 行。ret 容量有限(MAX_RET),输出装不下就停并补一行
-		// [truncated] —— 调用方问 x 行,要么拿到 x 行,要么明确知道被截了。
-		return headLines(cmd.ival, cmd.target, out)
+		// 面板(视口)从最上面数前 n 行 —— 不是缓冲区开头(见 cv.ConsoleLineText)。
+		// ret 容量有限(MAX_RET),输出装不下就停并补一行 [truncated] ——
+		// 调用方问 x 行,要么拿到 x 行,要么明确知道被截了。
+		return headLines(cmd.ival, cmd.target)
 
 	// ---- 字体 / 会话 ----
 	case .Font:
@@ -311,14 +338,12 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 		}
 		return cv.PageSetTitle(page_h, cmd.sval)
 	case .PageList:
-		if out != nil {
-			cur := cv.PageCurrent()
-			n := cv.PageCount()
-			for i in 1 ..= n {
-				page_h := cv.PageByIndex(i)
-				mark := page_h == cur ? "*" : " "
-				out(fmt.tprintf("%s %d  %s", mark, i, cv.PageTitle(page_h)))
-			}
+		cur := cv.PageCurrent()
+		n := cv.PageCount()
+		for i in 1 ..= n {
+			page_h := cv.PageByIndex(i)
+			mark := page_h == cur ? "*" : " "
+			retWrite(fmt.tprintf("%s %d  %s", mark, i, cv.PageTitle(page_h)))
 		}
 		return true
 
@@ -336,17 +361,15 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 	// ---- 外观 / UI ----
 	case .Theme:
 		if cmd.sval == "" {
-			if out != nil {
-				cur := cv.GetTheme()
-				reg := cv.GetThemes()
-				for i in 1 ..< cv.MAX_THEME_SLOTS {
-					slot := mem.GetIndex(reg, i)
-					if slot == nil {
-						continue
-					}
-					mark := &slot.theme == cur ? "*" : " "
-					out(fmt.tprintf("%s %s", mark, string(slot.name[:slot.name_len])))
+			cur := cv.GetTheme()
+			reg := cv.GetThemes()
+			for i in 1 ..< cv.MAX_THEME_SLOTS {
+				slot := mem.GetIndex(reg, i)
+				if slot == nil {
+					continue
 				}
+				mark := &slot.theme == cur ? "*" : " "
+				retWrite(fmt.tprintf("%s %s", mark, string(slot.name[:slot.name_len])))
 			}
 			return true
 		}
@@ -398,18 +421,16 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 	case .Cwd:
 		// 无参数 = 查询(会话记忆目录 + 配置默认);有参数 = 设置配置默认
 		if len(cmd.sval) == 0 {
-			if out != nil {
-				sess := cv.FocusedConsoleCwd()
-				def := cv.GetSessionCwd()
-				if len(sess) > 0 {
-					out(fmt.tprintf("cwd(焦点会话): %s", sess))
-				}
-				if len(def) > 0 {
-					out(fmt.tprintf("cwd(配置默认): %s", def))
-				}
-				if len(sess) == 0 && len(def) == 0 {
-					out("cwd: (都没有 —— 新会话继承 CETerm 进程目录)")
-				}
+			sess := cv.FocusedConsoleCwd()
+			def := cv.GetSessionCwd()
+			if len(sess) > 0 {
+				retWrite(fmt.tprintf("cwd(焦点会话): %s", sess))
+			}
+			if len(def) > 0 {
+				retWrite(fmt.tprintf("cwd(配置默认): %s", def))
+			}
+			if len(sess) == 0 && len(def) == 0 {
+				retWrite("cwd: (都没有 —— 新会话继承 CETerm 进程目录)")
 			}
 			return true
 		}
@@ -427,39 +448,34 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 	case .UnsetBinding:
 		return UnsetKeyBinding(inp.Scancode(cmd.sc), cmd.mods)
 	case .BindingsGet:
-		if out != nil {
-			kb := GetKeyBindings()
-			if kb.count == 0 {
-				out("(no bindings)")
-			}
-			for i in 0 ..< kb.count {
-				b := &kb.bindings[i]
-				combo : [64]u8
-				sub_buf : [256]u8
-				sub := FormatCommand(b.cmd, sub_buf[:])
-				out(fmt.tprintf("bind %s \"%s\"", comboName(b.mods, b.key, &combo), sub))
-			}
+		kb := GetKeyBindings()
+		if kb.count == 0 {
+			retWrite("(no bindings)")
+		}
+		for i in 0 ..< kb.count {
+			b := &kb.bindings[i]
+			combo : [64]u8
+			sub_buf : [256]u8
+			sub := FormatCommand(b.cmd, sub_buf[:])
+			retWrite(fmt.tprintf("bind %s \"%s\"", comboName(b.mods, b.key, &combo), sub))
 		}
 		return true
 
 	// ---- 帮助 ----
 	case .Help:
-		if out == nil {
-			return true
-		}
 		if cmd.sval != "" {
 			spec := findSpec(cmd.sval)
 			if spec == nil {
 				return false
 			}
-			out(fmt.tprintf("%s %s  — %s", spec.name, spec.usage, spec.help))
+			retWrite(fmt.tprintf("%s %s  — %s", spec.name, spec.usage, spec.help))
 			return true
 		}
 		for i in 0 ..< len(COMMAND_SPECS) {
 			s := &COMMAND_SPECS[i]
-			out(fmt.tprintf("%s %s", s.name, s.usage))
+			retWrite(fmt.tprintf("%s %s", s.name, s.usage))
 		}
-		out("help <命令> 查看单条说明")
+		retWrite("help <命令> 查看单条说明")
 		return true
 	}
 	return false
@@ -468,27 +484,24 @@ ExecuteCommand :: proc(cmd : ParsedCommand, out : proc(msg : string) = nil) -> b
 // head 输出被 ret 容量截断时的尾行标记(见 headLines)
 HEAD_TRUNC :: "[truncated]"
 
-// 取缓冲区最上面 n 行的文本,每行一次 out。
+// 取**面板**(视口)最上面 n 行的文本。超出面板行数 = 给多少算多少。
 // 预算 = MAX_RET:装不下就停并补一行 [truncated] —— 调用方问 x 行,要么拿到 x 行,
 // 要么明确知道被截了(静默丢会让"输出 x 行"这个量化变成假的)。
-// 越界(要的比有的多)不算错:给多少算多少。
-headLines :: proc(n : int, target : mem.Handle, out : proc(msg : string)) -> bool {
-	if out == nil || n <= 0 {
+headLines :: proc(n : int, target : mem.Handle) -> bool {
+	if n <= 0 {
 		return true
 	}
 	linebuf : [1024]u8
-	used := 0
 	for i in 0 ..< n {
 		text, ok := cv.ConsoleLineText(i, linebuf[:], target)
 		if !ok {
 			break // 没有更多行了
 		}
-		if used + len(text) + 1 > cv.MAX_RET - len(HEAD_TRUNC) - 1 {
-			out(HEAD_TRUNC) // 每条 out 末尾还会补一个 '\n',所以留出它的位置
+		if ret_len + len(text) + 1 > cv.MAX_RET - len(HEAD_TRUNC) - 1 {
+			retWrite(HEAD_TRUNC) // 每条 retWrite 末尾还会补一个 '\n',所以留出它的位置
 			return true
 		}
-		out(text)
-		used += len(text) + 1
+		retWrite(text)
 	}
 	return true
 }

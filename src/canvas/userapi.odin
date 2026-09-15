@@ -749,16 +749,21 @@ ConsoleCount :: proc() -> int {
 	return count
 }
 
-// 取 id(或焦点)窗格**当前缓冲区**第 n 行文本(n 从缓冲区最上面数,0-based)。
-// 文本写进 buf(借用,调用期间有效);末尾空白已裁。false = 无窗格/无会话/越界。
-// 渲染细节(宽字符续列、行尾空白)归 TermBuffer 自己,见 buffer.odin。
-// 配套命令:head。
+// 取 id(或焦点)窗格**面板**第 n 行(n 从面板最上面数,0-based)的文本。
+// "面板" = 当前视口:普通模式贴底(顶行 = 缓冲区倒数第 rows 行),review 模式锚定
+// review_line。视口公式只有一处(console.odin 的 viewportTop),这里复用它的公开入口
+// —— 不要在这里另算一遍。
+// 文本写进 buf(借用,调用期间有效);末尾空白已裁。
+// false = 无窗格/无会话/超出面板行数(面板只有 console.rows 行)。
+// 渲染细节(宽字符续列、行尾空白)归 TermBuffer 自己,见 buffer.odin。配套命令:head。
 ConsoleLineText :: proc(n : int, buf : []u8, id : mem.Handle = {}) -> (text : string, ok : bool) {
-	console := NodeConsole(resolveWindow(id))
-	if console == nil {
+	console_h := NodeConsoleId(resolveWindow(id))
+	console := GetConsole(console_h)
+	if console == nil || n < 0 || n >= int(console.rows) {
 		return "", false
 	}
-	return TermBufferLineText(console.active_term_buffer_id, n, buf)
+	top, _ := ConsoleViewportTop(console_h)
+	return TermBufferLineText(console.active_term_buffer_id, top + n, buf)
 }
 
 // 窗格信息快照(派生量按值返回,同 fnt.GetMetrics 的做法;font_name 借用 console

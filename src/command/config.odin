@@ -78,14 +78,15 @@ configRunText :: proc(text, path : string, stats : ^ConfigStats) {
 			continue
 		}
 		stats.lines += 1
-		err, ok := executeString(line, errbuf[:], configOut)
+		ret, ok := executeString(line, errbuf[:])
 		if !ok {
-			if err == "" {
-				err = "执行失败" // 语法通过但动作返回 false(环境/状态不满足)
-			}
-			fmt.eprintfln("config %s:%d shat itself: %s. Alacritty rewrites its config format every other release and never apologizes; I at least give you a line number.", path, line_no, err)
+			// ok=false 必有原因(executeString 保证),ret 就是原因
+			fmt.eprintfln("config %s:%d shat itself: %s. Alacritty rewrites its config format every other release and never apologizes; I at least give you a line number.", path, line_no, ret)
 			stats.failed += 1
 			continue
+		}
+		if ret != "" {
+			fmt.print(ret) // 查询类命令的回显(多行,已带换行)
 		}
 		stats.applied += 1
 	}
@@ -110,11 +111,6 @@ configLoadFile :: proc(target : string) -> bool {
 	stats : ConfigStats
 	configRunText(string(data), full, &stats)
 	return stats.failed == 0
-}
-
-// 配置文件里的查询命令 → stdout(与命令栏输出一致)
-configOut :: proc(msg : string) {
-	fmt.println(msg)
 }
 
 // 用户配置路径:%LOCALAPPDATA%\CETerm\config.ceterm(无 LOCALAPPDATA 环境变量 = 不可用)
