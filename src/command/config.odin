@@ -79,19 +79,24 @@ configRunText :: proc(text, path : string, stats : ^ConfigStats) {
 		}
 		stats.lines += 1
 		ret, ok := executeString(line, errbuf[:])
-		// 循环体里显式释放,不用 defer:defer 是作用域级(函数级)的,放循环里
-		// 要等整个函数退出才跑,每轮都攒一份(实测见 playground/deferprobe)
+		// ret 的所有权分两种(见 executeString):执行成功 = 堆字符串(要删),
+		// 解析失败 = 借用 errbuf 的切片(绝不能删)。解析失败时 ret 非空,正好可判。
+		// defer 是**作用域级**(循环体里的 defer 每轮结束就触发,不攒到函数退出 ——
+		// 实测见 playground/deferprobe),所以成功路径直接用 defer 收。
+		// 不用 `defer if ok { delete(ret) }`:那个条件是**触发时**求值的,读起来容易
+		// 以为是声明时求值。写成作用域里的普通 defer,分支自己管。
 		if !ok {
-			// ok=false 必有原因(executeString 保证),ret 就是原因
+			// ok=false 必有原因(ret 即原因:解析失败是 errbuf,执行失败是命令层给的一句)
 			fmt.eprintfln("config %s:%d shat itself: %s. Alacritty rewrites its config format every other release and never apologizes; I at least give you a line number.", path, line_no, ret)
-			delete(ret)
+			if len(ret) > 0 {
+				delete(ret) // 借来的那份;下面那个 defer 在 !ok 时不触发
+			}
 			stats.failed += 1
 			continue
 		}
 		if ret != "" {
 			fmt.print(ret) // 查询类命令的回显(多行,已带换行)
 		}
-		delete(ret)
 		stats.applied += 1
 	}
 }

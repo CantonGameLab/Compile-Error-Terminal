@@ -82,7 +82,9 @@ ProcessKeys :: proc() {
 			continue
 		}
 		if b := findBinding(ev.sc, modsFromByte(ev.mods)); b != nil {
-			ExecuteCommand(b.cmd)
+			// 绑定触发的命令不回显(无命令栏上下文):ret 拿到就删
+			ret, _ := ExecuteCommand(b.cmd)
+			delete(ret)
 			ev.consumed = true // 动作已执行,序列不再进应用
 		}
 	}
