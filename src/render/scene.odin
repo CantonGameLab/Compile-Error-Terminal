@@ -18,34 +18,17 @@ import "core:time"
 DrawFrame :: proc() {
 	p := cv.CurrentPage()
 	single := p != nil && p.view_mode == .Single
-	ResetSects() // 分趟产出计量(探针用;无 profile 时是空过程)
-	SectBegin("render:趟 bg-内容")
 	drawWalk(cv.WindowTreeRoot(), true, single)
-	SectEnd()
 	// 背景延伸成员(均在背景 pass 前进背景批 → 与内容区同一 shader):
 	//   焦点描边 + 激活页签底(输入色 = theme.bg → shader 后同值,无缝融合)
-	SectBegin("render:趟 bg-焦点描边")
 	drawFocusBorder()
-	SectEnd()
-	SectBegin("render:趟 bg-激活页签底")
 	drawTabBarActiveBg()
-	SectEnd()
-	SectBegin("render:趟 bgshader")
 	drawBackgroundPass(f32(s3.GetTicks()) / 1000.0) // 背景批 → FBO → 背景 shader
-	SectEnd()
-	SectBegin("render:趟 fg-内容")
 	drawWalk(cv.WindowTreeRoot(), false, single)
-	SectEnd()
 	// 底部页签条(状态栏雏形):条底 + 页签 + 右侧工具区(命令栏输入框、FPS)
-	SectBegin("render:趟 页签条")
 	drawTabBar()
-	SectEnd()
-	SectBegin("render:趟 命令栏")
 	drawCommandBar()
-	SectEnd()
-	SectBegin("render:趟 FPS")
 	drawFps()
-	SectEnd()
 	flushBatch()
 
 	drawWalk :: proc(node_h : mem.Handle, bg : bool, single : bool) {
@@ -572,9 +555,23 @@ drawDecoLine :: proc(line : ^cv.Line, col_limit : int, row : int, console : ^cv.
 }
 
 // DECSCUSR 闪烁样式(Ps=1/3/5):500ms 亮、500ms 灭
+BLINK_PERIOD_MS :: u64(500)
+
 cursorBlinkOn :: proc(style : u8) -> bool {
 	if style != 1 && style != 3 && style != 5 {
 		return true
 	}
-	return (s3.GetTicks() / 500) % 2 == 0
+	return (s3.GetTicks() / BLINK_PERIOD_MS) % 2 == 0
+}
+
+// ---------------------------------------------------------------------------
+// 周期需求(阻塞式主循环的判据④)
+// ---------------------------------------------------------------------------
+// 与状态无关、纯按时间变化的可见输出只有两处,周期恰好都是 500ms:
+//   光标闪烁(BlinkAlpha/cursorBlinkOn) 与 FPS 标签的显示值(fps_value 每 0.5s 更新)
+// 主循环用这个截止点当阻塞超时上限:到点必须醒一次,否则光标不闪。
+// 返回 0 = 当前没有任何周期需求,可以永久阻塞。
+NextAnimDeadlineMs :: proc() -> u64 {
+	// 若将来多了周期不同的动画,这里取各截止点的最小值。
+	return (s3.GetTicks() / BLINK_PERIOD_MS + 1) * BLINK_PERIOD_MS
 }

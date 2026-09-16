@@ -4,6 +4,7 @@ import win "core:sys/windows"
 import "core:thread"
 import "core:sync"
 import "core:time"
+import s3 "vendor:sdl3"
 import mem "../memory"
 
 MAX_READ_BUFFER :: (2<<16) // 128KB,2 的幂(环绕用 & 掩码)
@@ -22,7 +23,38 @@ ReadWriteData :: struct {
 
 read_write_datas : [MAX_CONPTY_SLOTS]ReadWriteData
 
-// 阻塞读管道 → 写环形缓冲;ReadFile 被 CloseHandle 打断(失败)时退出
+// ---------------------------------------------------------------------------
+// 唤醒主循环(阻塞式主循环的前提)
+// ---------------------------------------------------------------------------
+// 主循环会阻塞在 WaitEventTimeout 上睡觉。子进程输出由本模块的读线程推进 ring,
+// 若不通知,主循环就不知道有新输出 —— 终端会停止刷新。
+// 做法:读线程往 SDL 事件队列推一个自定义事件,把主循环唤醒。
+// event.Update 的 #partial switch 不匹配这个类型,天然忽略(只起"醒一下"的作用)。
+wake_event_type : u32 = 0 // s3.RegisterEvents(1) 结果;0 = 未注册
+
+initWakeEvent :: proc() {
+	if wake_event_type == 0 {
+		wake_event_type = s3.RegisterEvents(1)
+	}
+}
+
+// 启动读线程前调用:确保唤醒事件类型已注册(否则读线程的 wakeMainLoop 静默跳过,
+// 退化成"主循环靠超时轮询" —— 能跑,但阻塞期间子进程输出会延迟到下次超时)。
+InitWakeEvent :: proc() {
+	initWakeEvent()
+}
+
+// 读线程调用(线程安全);未注册时静默跳过(退化为轮询,不会出错)
+wakeMainLoop :: proc() {
+	if wake_event_type == 0 {
+		return
+	}
+	ev : s3.Event
+	ev.type = s3.EventType(wake_event_type)
+	_ = s3.PushEvent(&ev)
+}
+
+// 读线程阻塞读管道 → 写环形缓冲;ReadFile 被 CloseHandle 打断(失败)时退出
 readThreadProc :: proc(t: ^thread.Thread) {
 	h := (cast(^mem.Handle)t.data)^
 	conpty_context := GetConptyContext(h)
@@ -33,12 +65,14 @@ readThreadProc :: proc(t: ^thread.Thread) {
 	buf := make([]byte, 8 * 1024)
 	defer delete(buf)
 	defer sync.atomic_store_explicit(&read_write_data.dead, true, .Release)
+	defer wakeMainLoop() // 线程退出(管道断开)= 状态变化,也叫醒一次
 	for {
 		n, ok := readConptyOutput(conpty_context, buf)
 		if !ok {
 			break
 		}
 		ringPush(read_write_data, buf[:n])
+		wakeMainLoop() // 有新输出:叫醒可能正在睡的主循环
 	}
 }
 
@@ -80,6 +114,32 @@ ringLen :: proc(read_write_data: ^ReadWriteData) -> u32 {
 	return read_write_data.tail - sync.atomic_load_explicit(&read_write_data.head, .Acquire)
 }
 
+// ---------------------------------------------------------------------------
+// 未读检查(阻塞式主循环的判据①)
+// ---------------------------------------------------------------------------
+// 只读,不消耗。主循环靠它决定"子进程还有输出没消化"要不要再跑一帧。
+// 与 RingPop 的分工:RingPop 是消费者(推进 head),这里是观察者。
+RingHasData :: proc(h : mem.Handle) -> (pending : bool, bytes : u32) {
+	rwd := GetReadWriteData(h)
+	if rwd == nil {
+		return false, 0
+	}
+	n := ringLen(rwd)
+	return n > 0, n
+}
+
+// 全部会话里是否有任意一个还有未读输出(主循环每帧问一次)。
+// 走池枚举,不裸读数组。
+AnyRingHasData :: proc() -> bool {
+	it : mem.Iter(MAX_CONPTY_SLOTS, ConptyContext) = mem.All(&conpty_contexts)
+	for h in mem.next(&it) {
+		if pending, _ := RingHasData(h); pending {
+			return true
+		}
+	}
+	return false
+}
+
 RingPop :: proc(read_write_data: ^ReadWriteData, out: []byte) -> int {
 	n := 0
 	for n < len(out) {
@@ -98,6 +158,7 @@ StartReadThread :: proc(h : mem.Handle) -> bool {
 	if GetConptyContext(h) == nil {
 		return false
 	}
+	initWakeEvent() // 唤醒机制就绪(首个会话建立时注册也来得及)
 	read_write_data := &read_write_datas[h.id]
 	if read_write_data.thread != nil {
 		return false

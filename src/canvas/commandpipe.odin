@@ -114,3 +114,30 @@ ReapCommand :: proc(poll_h : mem.Handle) -> (ev : ^CommandEvent, ok : bool) {
 	poll.read_head += 1
 	return e, true
 }
+
+// 是否有没消化完的命令事件(阻塞式主循环的判据③)。只读,不消耗。
+//
+// **两个方向都要判**,缺一个就会卡:
+//   head < len        = 已推入、还没被 command 消费(未执行)
+//   read_head < head  = 已执行、还没被回读(结果要经 oscCmdReply 写回子进程 stdin,
+//                       或经 CommandBarReap 打出来)
+// 恒有 read_head <= head <= len。第二项不能省 —— 回读的 drain 跑在帧内较早位置
+// (UpdateConsole 开头 / canvas.Update 中段),而生产者可能在它之后才 push,
+// 所以"执行完但没回读"跨帧残留是**常态**。漏判它 = 子进程等应答时永久挂起。
+//
+// 例外:console 的 poll 靠 UpdateConsole 里的 oscCmdReap 回读,而 UpdateConsole 只对
+// **有会话**的 console 跑。无会话 console 的 poll 永远排不掉 —— 那种残留会让人
+// 永远无法入睡,所以只对"还在池里且确实被驱动"的 poll 计数(见 has_driver)。
+CommandPipePending :: proc() -> bool {
+	it : mem.Iter(MAX_COMMAND_POLLS, CommandPoll) = mem.All(&command_polls)
+	for poll_h in mem.next(&it) {
+		poll := mem.Get(&command_polls, poll_h)
+		if poll == nil {
+			continue
+		}
+		if poll.head < len(poll.command_events) || poll.read_head < poll.head {
+			return true
+		}
+	}
+	return false
+}

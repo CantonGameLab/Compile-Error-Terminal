@@ -1,14 +1,14 @@
-# dterm 设计文档
+# CompileErrorTerminal (CETerm) 设计文档
 
 > 版本:v1(草案,待完善)
-> 定位:dterm 是一个**拓展性的终端应用管理器(exterminal)**
+> 定位:CETerm 是一个**拓展性的终端应用管理器(exterminal)**
 
 ---
 
 ## 1. 定位与愿景
 
-- dterm 不是"终端模拟器",而是**终端应用管理器**:每个窗口承载一个终端应用,并为其提供管理工具与应用间协作能力。
-- 终端应用 = **ConPTY 子进程**(shell / neovim / agent 工具等),通过 ConPTY 管道与 dterm 交流——不引入其他通信抽象。
+- CETerm 不是"终端模拟器",而是**终端应用管理器**:每个窗口承载一个终端应用,并为其提供管理工具与应用间协作能力。
+- 终端应用 = **ConPTY 子进程**(shell / neovim / agent 工具等),通过 ConPTY 管道与 CETerm 交流——不引入其他通信抽象。
 - 超文本内容(数学公式 / GIF / 视频 / UI 控件)是未来能力,通过**扩展 ANSI 转义序列**实现;当前只做文本渲染。
 
 ## 2. 概念模型
@@ -16,13 +16,13 @@
 ```
 Window(leaf 节点)= 一个 App = 一个 ConPTY 子进程
   ├─ console:渲染子进程输出(conpty pipeline 是唯一交流通道)
-  └─ iterm[]:dterm 内置管理工具(浮层 UI,不是 app,不走 conpty)
-       └─ 工具通过 dterm 指令通道控制 app
+  └─ iterm[]:CETerm 内置管理工具(浮层 UI,不是 app,不走 conpty)
+       └─ 工具通过 CETerm 指令通道控制 app
 ```
 
 - **window ↔ app 一一对应**:一个 window 一个 conpty 一个 console。
-- **iterm = 管理工具**:控制台、侧边文件树、预览面板、状态栏——dterm 自己渲染,复用 Console/TermBuffer(conpty_handle = 0 的内部 console)。
-- **应用间交互 = 指令通道**:文件树 app 通过扩展 ANSI 序列向 dterm 发送 canvas 接口调用指令(如 focus、send-input),dterm 解析执行——指令接口面向**需要控制 dterm 的使用方**(子进程 / 外部工具)。
+- **iterm = 管理工具**:控制台、侧边文件树、预览面板、状态栏——CETerm 自己渲染,复用 Console/TermBuffer(conpty_handle = 0 的内部 console)。
+- **应用间交互 = 指令通道**:文件树 app 通过扩展 ANSI 序列向 CETerm 发送 canvas 接口调用指令(如 focus、send-input),CETerm 解析执行——指令接口面向**需要控制 CETerm 的使用方**(子进程 / 外部工具)。
 
 ## 3. 分层架构
 
@@ -48,7 +48,7 @@ Window(leaf 节点)= 一个 App = 一个 ConPTY 子进程
 | `console.odin` | `Console` | 窗格内容实体:视口生命周期 + 布局(居中/`viewportTop`/review 锚定)+ **字体集**(主/粗/斜/粗斜 + 输入名,引用计数持有者)+ 会话(conpty/缓冲)+ `ensureConsole`/`ConsoleFontVariant` |
 | `vt.odin` | `VtState` | VT 语法语义分派(ESC/CSI/SGR/DEC 模式)+ 应答 |
 | `userapi.odin` | —(用户接口状态) | 窗格/会话/字体/焦点域用户接口函数族(id 省略 = 焦点)+ 默认启动配置(`DefaultLaunch`)+ 查询(`ConsoleCount`/`GetSplitFactor`/`GetConsoleInfo`) |
-| `theme.odin` | `Theme`/`NamedTheme`/`ThemeField` | 命名主题注册表(外部数据 `resource/themes.dterm`)+ `boot_theme` 启动兜底;颜色引用编码归属(DEFAULT_COLOR/colorRgb/colorIndex/ResolveColor/ansi256ToRgb);`THEME_FIELDS` 字段名表 + DefineTheme/SetThemeField/SetThemeByName/GetTheme/GetThemeSlot |
+| `theme.odin` | `Theme`/`NamedTheme`/`ThemeField` | 命名主题注册表(外部数据 `resource/themes.ceterm`)+ `boot_theme` 启动兜底;颜色引用编码归属(DEFAULT_COLOR/colorRgb/colorIndex/ResolveColor/ansi256ToRgb);`THEME_FIELDS` 字段名表 + DefineTheme/SetThemeField/SetThemeByName/GetTheme/GetThemeSlot |
 | `page.odin` | `Page`/`PageMode` | 页数据:每页一棵窗口树(页持根句柄 + 页内焦点 + 显示模式);页签几何/命中(PageTabRect/TabBarHit);PageCreate/New/Destroy/Switch/Next/Prev + SetSingleMode/ToggleSingleMode |
 | `ui.odin` | —(UI 定制状态) | UI 字体定制(页签/状态栏/FPS 共用):SetUIFont/GetUIFont/ResetUIFont;默认 consola 18 |
 
@@ -66,7 +66,7 @@ Window(leaf 节点)= 一个 App = 一个 ConPTY 子进程
 
 ### 4.0 主题(配色)数据
 
-参考落地:alacritty(269 索引表 + normal/bright/dim 结构字段)、WT(扁平 20 字段 JSON 配色方案)、kitty(color0-255 展开 + 边框色独立)。dterm 取三方共识与最小集:
+参考落地:alacritty(269 索引表 + normal/bright/dim 结构字段)、WT(扁平 20 字段 JSON 配色方案)、kitty(color0-255 展开 + 边框色独立)。CETerm 取三方共识与最小集:
 
 ```odin
 // src/canvas/theme.odin — 主题数据(唯一写者 = canvas;render 只读)
@@ -92,8 +92,8 @@ Theme :: struct {
 
 **命名主题注册表(外部数据段)**:`NamedTheme{name, theme}` 槽位数组(`MAX_THEME_SLOTS = 32`)+
 `current_theme_h`(当前激活槽)+ `boot_theme`(代码内唯一保留的启动兜底色,非可发布主题)。
-内置 8 套配色是**外部数据** `resource/themes.dterm`(每主题 30 行 `theme-set "name" <字段> <#RRGGBB>`),
-由入口配置 `load "themes.dterm"` 引入 —— 代码里不再有主题常量。
+内置 24 套配色是**外部数据** `resource/themes.ceterm`(每主题 30 行 `theme-set "name" <字段> <#RRGGBB>`),
+由入口配置 `load "themes.ceterm"` 引入 —— 代码里不再有主题常量。
 写者:`SetThemeField(name, field, index, color)`(逐项,名字不存在即建槽)/ `SetThemeByName(name)`(激活)/
 `GetTheme()^` 直接改字段(程序化整表改)。**单一真相 = 注册表槽**,改活动主题的字段下一帧即生效。
 
@@ -220,7 +220,7 @@ current_page : mem.Handle     // 当前页;0 = 无页(程序空态)
 
 ### 5.0 用户接口(控制台指令集 / 配置文件)
 
-**入口**:① 悬浮控制台(F2 呼出)输入指令回车执行;② 配置文件 `config.dterm`(逐行 = 一条指令,见 6.3)。
+**入口**:① 悬浮控制台(F2 呼出)输入指令回车执行;② 配置文件 `config.ceterm`(逐行 = 一条指令,见 6.3)。
 两处共用同一套语法、解析器与解释器;**指令无 `:` 前缀**,命令名与键名大小写不敏感。
 
 **语法**:`命令名 参数... [@id]`
@@ -420,7 +420,7 @@ SetFocusIterm(index : i32) / GetFocusIterm() -> i32
 
 // 输入路由(每帧):全局按键 → 焦点目标
 //   焦点在主应用(focused_iterm == -1):写 conpty
-//   焦点在工具:交给工具处理(dterm 内部,后续工具落地时定义)
+//   焦点在工具:交给工具处理(CETerm 内部,后续工具落地时定义)
 ```
 
 ### 5.5 会话 / 字体 / 渲染(现状保留)
@@ -464,25 +464,25 @@ ResetBackgroundShader() -> bool              // 重读默认文件(热重载)
 ### 6.1 指令入口现状(V1 已实现)
 
 - **悬浮控制台指令**(已实现):F2 呼出悬浮输入框,输入指令回车执行(见 5.0)。这是当前唯一的指令入口,供用户交互。
-- **ANSI 子进程指令通道**(规划,未实现):子进程经扩展 ANSI 序列(`ESC]999;<cmd> ESC\`)向 dterm 发指令。需在 OSC 999 识别 → 提取命令字符串 → `ExecuteCommandString`(vtparse 状态机已并入 canvas,`src/canvas/vtparse.odin`)。
+- **ANSI 子进程指令通道**(已实现,协议见 `docs/OSC999.md`):子进程经扩展 ANSI 序列(`ESC]999;<cmd> ST`)向 CETerm 发指令,回执经同一 OSC 号写回子进程 stdin。识别在 OSC 999 → 命令字符串 → `executeString`(命令层;vtparse 状态机已并入 canvas,`src/canvas/vtparse.odin`)。需先由命令栏 `osc on` 授权该窗格。
 - 两者共用同一套指令语义(5.0),只是载体不同。
 
 ### 6.2 DLL 插件(规划,未实现)
 
 - `ApiTable`:用户视角函数族(见 5.0b)+ `AppState`(全局状态指针,GenArray 定长存储、地址稳定)。
-- 用户 DLL `dterm_bind(^ApiTable)` 接收接口;改行为只需重编译 DLL + 热重载,不重启 dterm。
+- 用户 DLL `ceterm_bind(^ApiTable)` 接收接口;改行为只需重编译 DLL + 热重载,不重启 CETerm。
 - 跨边界约束:不传动态数组/字符串所有权;用户 DLL 不分配内存;全部 `proc "stdcall"`。
 
-### 6.3 配置分层(已实现:`config.dterm` = 命令脚本)
+### 6.3 配置分层(已实现:`config.ceterm` = 命令脚本)
 
-- **用户配置** `%APPDATA%\Local\dterm\config.dterm`:存在且可读 → 只执行它(完全替代保底配置)。
-- **保底配置** `<工作目录>\resource\config.dterm`:用户配置缺失/读失败时执行(随源码提交 = 出厂默认)。
+- **用户配置** `%APPDATA%\Local\CETerm\config.ceterm`:存在且可读 → 只执行它(完全替代保底配置)。
+- **保底配置** `<资源根>\config.ceterm`:用户配置缺失/读失败时执行(随源码提交 = 出厂默认;资源根见 3.3)。
 - 语法 = 一行一条指令(与命令栏共用 `ParseCommandStringEx` + `ExecuteCommand`);行首 `#` / `//` 为注释;
   某行失败 → stderr 报 `路径:行号 + 原因` 并继续执行后续行(不整体回退)。
 - **执行模型 = 逐行顺序执行(无相位)**:顺序由配置自己负责 —— 需要窗格的命令(split/font/launch/page-*)
   写在 `page-new` 之后;main 只在配置未建页时保底建第一页。
 - **分片 = `load "<path>"`**:就地展开另一个命令文件;相对路径按**当前文件所在目录**解析,嵌套上限 8。
-  主题库 `resource/themes.dterm`(内置 8 套配色)即由入口配置首行 `load "themes.dterm"` 引入。
+  主题库 `resource/themes.ceterm`(内置 24 套配色)即由入口配置首行 `load "themes.ceterm"` 引入。
 - 配置里可写多页启动布局(`page-new "dev"` / `split right` / `launch "bash"` …)。
 - **行为配置**(Odin 代码 / DLL,编译):自定义初始化流程、特殊布局逻辑。
 
@@ -496,11 +496,10 @@ ResetBackgroundShader() -> bool              // 重读默认文件(热重载)
 
 ## 8. 待办与开放问题
 
-- [ ] ANSI 子进程指令通道:vtparse 识别 `OSC 999 ; <cmd> ST`,转 `ExecuteCommandString`
+- [x] ANSI 子进程指令通道:vtparse 识别 `OSC 999 ; <cmd> ST`,转 `executeString`(见 `docs/OSC999.md`)
 - [ ] iterm 工具运行时(InternalApp 绘制 + 输入拦截)落地后定义工具输入接口
 - [ ] rich content:扩展 ANSI 序列设计(OSC 998 回执 / 内容上传协议)
 - [ ] 多插件注册与优先级
-- [ ] 指令回复通道(子进程需要知道指令成败?)
+- [x] 指令回复通道:回执经 `OSC 999 ; > ok|err ; <body> ST` 写回子进程 stdin(见 `docs/OSC999.md` §3)
 - [ ] 命令结果 UI 显示(查询输出当前打 stdout;命令栏内驻留显示待做)
-- [ ] 配置热重载(改 `config.dterm` 后经命令重读)
-- [ ] 多插件注册与优先级
+- [ ] 配置热重载(改 `config.ceterm` 后经命令重读)

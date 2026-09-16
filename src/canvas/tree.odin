@@ -803,11 +803,17 @@ ConsoleUpdateTree :: proc(node_h : mem.Handle) {
 	it : mem.Iter(MAX_CONSOLE_SLOTS, Console) = mem.All(&consoles)
 	for ch in mem.next(&it) {
 		console := mem.Get(&consoles, ch)
-		if console == nil || ct.GetConptyContext(console.conpty_handle) == nil {
+		if console == nil {
 			continue
 		}
 
+		// 应答排空 + 拉取解析(UpdateConsole 内部对无会话 console 只做应答排空)
 		UpdateConsole(ch)
+
+		// 无会话的工具 console:没有 ConPTY 可 resize,到此为止
+		if ct.GetConptyContext(console.conpty_handle) == nil {
+			continue
+		}
 
 		if console.rows == console.pty_rows && console.cols == console.pty_cols {
 			continue

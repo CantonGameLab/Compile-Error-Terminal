@@ -84,6 +84,7 @@ CommandStringKind :: enum u8 {
 	UIFontReset,
 	Borderless,     // mode
 	VSync,          // mode
+	BlockLoop,      // mode:主循环阻塞(事件驱动)vs 忙等(无条件每帧)
 	BgShader,       // sval(空 = 重载默认文件)
 	ToggleCommandBar,
 	DefaultLaunch,  // sval(cmd)+ sval2(font)+ fval(size)
@@ -385,6 +386,19 @@ ExecuteCommand :: proc(cmd : ParsedCommand) -> (ret : string, ok : bool) {
 			on = !on
 		}
 		rnd.SetVSync(on)
+		ok = true
+	case .BlockLoop:
+		// 主循环是否阻塞等待(关 = 每帧无条件跑,退回加阻塞前的行为)
+		on := rnd.GetBlockLoop()
+		switch cmd.mode {
+		case .On:
+			on = true
+		case .Off:
+			on = false
+		case .Toggle:
+			on = !on
+		}
+		rnd.SetBlockLoop(on)
 		ok = true
 	case .BgShader:
 		if cmd.sval == "" {

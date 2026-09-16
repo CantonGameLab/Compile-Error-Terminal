@@ -1,4 +1,4 @@
-# dterm 项目规范
+# CompileErrorTerminal (CETerm) 项目规范
 
 Windows 终端模拟器(Odin + SDL3 + OpenGL 4.4 core + ConPTY)。完整规范见 `docs/CODING_STYLE.md`(本文件为其精炼版);完整工程体系(含理论根基/检查清单)见 skill `dod-engineer`(`.dsh/skills/dod-engineer/SKILL.md`)。
 
@@ -30,3 +30,4 @@ Windows 终端模拟器(Odin + SDL3 + OpenGL 4.4 core + ConPTY)。完整规范�
 ## 构建
 
 用户自行运行 `odin build src/`(生成 ./src.exe)并粘贴输出;Odin 库源码从项目 `reference/` 目录读取。
+发布/分发包内的可执行文件名 = `ceterm.exe`(打包时 `odin build src/ -out:build/ceterm.exe`;开发构建仍用上面的命令)。

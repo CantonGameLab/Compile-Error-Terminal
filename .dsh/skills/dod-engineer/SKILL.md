@@ -1,10 +1,10 @@
 ---
 name: dod-engineer
-description: dterm 仓库的 Data-Oriented 工程规范。编写/修改/评审 Odin 代码、设计数据布局与模块划分、处理句柄生命周期或帧遍历路径时加载。核心立场:数据先行、无抽象层、复杂度是负债、理解优先。理论根基:Jonathan Blow / Casey Muratori / Mike Acton 的批判理论。
-whenToUse: 在 dterm 仓库中写代码、重构、写文档、评审实现方案,或讨论数据布局、模块依赖、遍历路径、内存/句柄管理时使用。做完设计决策后用它自查。
+description: CETerm(CompileErrorTerminal)仓库的 Data-Oriented 工程规范。编写/修改/评审 Odin 代码、设计数据布局与模块划分、处理句柄生命周期或帧遍历路径时加载。核心立场:数据先行、无抽象层、复杂度是负债、理解优先。理论根基:Jonathan Blow / Casey Muratori / Mike Acton 的批判理论。
+whenToUse: 在 CETerm 仓库中写代码、重构、写文档、评审实现方案,或讨论数据布局、模块依赖、遍历路径、内存/句柄管理时使用。做完设计决策后用它自查。
 ---
 
-# dod-engineer:dterm 的 Data-Oriented 工程体系
+# dod-engineer:CETerm 的 Data-Oriented 工程体系
 
 > 一句话立场:**计算机只按你的布局搬动数据。布局决定成本,抽象只有当场付了利息才配存在,不理解的代码就是负债。**
 
@@ -107,7 +107,7 @@ whenToUse: 在 dterm 仓库中写代码、重构、写文档、评审实现方�
 - 显式优于隐式:循环直接写,状态显式传递;禁止隐藏全局状态机。
 - 注释精简,**只写非显然逻辑(为什么)**,中文;文件头注释是最重要的注释。
 
-### 2.9 dterm 项目硬性约定
+### 2.9 CETerm 项目硬性约定
 - 构建:`odin build src/`(用户自行运行并粘贴输出;库源码从 `reference/` 读取)。
 - 验证:行为级回归探针放 `playground/<dir>/`(`odin run playground/<dir>/`),状态可复现 + 操作序列 + 断言,不依赖 UI。
 - **迁移 = 纯移动**:改逻辑与移位置分开提交;工具化迁移 + before/after 清单 + 哈希校验;**0 映射 / 目标为空 / 源缺失即中止**;先写新文件再删旧文件。

@@ -188,11 +188,57 @@
 | 语义层 | `playground/nvimtest`(89 断言) | 全部规则 B1-B7、132 列、origin、pum、宽字符 |
 | 真实字节 | `vtcapture` + `vtreplay`/`vttestreplay` | nvim(空文件/源码文件)、yazi、vttest 1/2 |
 | 验收 | vttest(经 ConPTY) | 80 列核心语义:光标/擦除/SGR/滚动/TAB/wrap/保存恢复 |
+| **性能** | `playground/profilerun` + `playground/profiletest` | 逐模块/子模块分趟计时(见 §5.1) |
 
 **vttest cmdfile 驱动要点**(`playground/vtcapture/vttest_cmds*.txt`):
 - 文件必须 **LF 行尾**(CRLF 会让 `\r` 残留进选择,菜单报 Bad choice)
 - `Wait:`/`Done:` 对覆盖 Setup 阶段的回放暂停(DA1 查询等,conhost 应答)
 - `Read:` 行提供菜单选择与 holdit 回车;数量要匹配(测试 1 = 7 个等待点,测试 2 = 9+)
+
+### 5.1 分趟计时(性能定位)
+
+**机制**:`src/profile/profile.odin`,编译期开关 `profile`(默认 **false**)。
+
+```
+odin run playground/profilerun/ -define:profile=true     # 出分趟表
+odin run playground/profiletest/  -define:profile=false  # 验证零开销
+```
+
+- 关闭时 `Mark/Begin/End/Now` 全被编译掉 —— 已实测**精确零开销**(4.001 ms vs 4.001 ms)。
+- 开启时单次标记 ~117 ns(两次 `GetPerformanceCounter` + 一次记录)。
+- 打点覆盖:main 帧序 6 处、`canvas.Update` 6 个子趟、`ConsoleUpdateTree` 4 处、
+  `render.Update` 3 处 + `DrawFrame` 6 个渲染趟(约 22 标记/帧)。
+
+**必须先看账目自检**:探针会打印"FRAME 标记之和 vs 该段实测墙钟"的偏差。
+偏差 > 5% 或"标记数 ≠ 帧数"时表不可信 —— 开发过程中正是这道检查抓到了
+`MAX_MARKS` 打满(标记被静默丢弃,每帧口径整体偏小)。
+
+**读表口径**:
+- `每帧(µs)` = 总计 / 帧数(按记录到的帧数,不是名义帧数)
+- `帧最小(µs)` = "某一帧里该阶段合计"的最小值。**用它区分"每帧恒定开销"与"偶发尖峰"**
+  —— `单次均(ns)` 在"一帧内调多次"的阶段会小到没有意义。
+
+**负载要分开测**:静置与满载混在一起会被平均掉,看什么都是平的。探针跑两相(A 静置 / B 子进程持续刷屏)。
+
+---
+
+## 5.2 首次分趟实测结论(160×43 面板,vsync off)
+
+| 相 | 帧墙钟 | swap | 应用逻辑合计 | 其中最大项 |
+|---|---|---|---|---|
+| A 静置 | 222 µs | 172 µs(77%) | ~6 µs | `scene:fg 趟` 30 µs(总工作,已含 DrawFrame) |
+| B 满载 | 232 µs | 150 µs(65%) | ~5 µs | `scene:fg 趟` 56 µs + `bg 趟` 9.6 µs |
+
+**两条结论**:
+1. **`GL_SwapWindow` 是当前最大单项**(150–172 µs/帧)。但它不是 CPU 工作 ——
+   探针里窗口不被合成器刷,所以这是"呈现路径"的成本,不是可优化的算法成本。
+   要判断真实瓶颈必须**带 vsync 或在真实窗口状态下测**。
+2. **应用侧最重的是 `scene:fg 趟`(字形绘制)**,静置 30 µs / 满载 56 µs。
+   相对地,**VT 解析只要 0.19 µs/帧**(`UpdateConsole`),`canvas.Update` 3.5 µs —— 
+   `Cell`/`GlyphSlot` 内存布局优化(此前测过 SoA 收益 ~0.01% 帧预算)确实不可能是瓶颈。
+
+**下一步该查的**(按实测大小):`scene:fg 趟` 内部(TabBar/CommandBar/FPS 那一趟 8.2 µs
+比整棵 console 树的更新 0.59 µs 还贵,值得先看)。
 
 ---
 

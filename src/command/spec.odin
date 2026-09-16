@@ -253,6 +253,11 @@ COMMAND_SPECS := [?]CommandSpec {
 		help = "垂直同步(省略参数 = 翻转)",
 	},
 	{
+		name = "blockloop", alias = "block", kind = .BlockLoop, args = {.Toggle, .None, .None},
+		usage = "[on|off]",
+		help = "主循环阻塞:on = 没活就睡(静止 CPU≈0);off = 每帧无条件跑(退回旧行为,排查用)",
+	},
+	{
 		name = "bgshader", alias = "bg", kind = .BgShader, args = {.Str, .None, .None}, req = 0,
 		usage = `["<path>"]`,
 		help = "背景 shader:缺省 = 重载默认文件,带路径 = 编译该文件",

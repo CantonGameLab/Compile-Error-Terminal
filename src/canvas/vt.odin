@@ -54,11 +54,15 @@ DA2_VERSION :: 100
 // 该 console 的一趟 I/O:先回写上帧命令的应答,再拉取并解析输出。
 // 应答回写必须放在最前 —— 本帧无输出时下面的早退会把它整趟跳掉。
 UpdateConsole :: proc(console_h : mem.Handle) {
+	// 命令应答回写(stdin):**必须无条件跑** —— 包括没有会话的工具 console。
+	// 否则该 poll 的 read_head 永远追不上 head,阻塞式主循环的
+	// CommandPipePending 会恒为真 → 永远无法入睡。
+	oscCmdReap(console_h)
+
 	console := GetConsole(console_h)
 	if console == nil {
 		return
 	}
-	oscCmdReap(console_h) // 命令应答回写(stdin);无在途 ret 时是空转
 	data := ct.GetReadWriteData(console.conpty_handle)
 	if data == nil {
 		return

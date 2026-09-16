@@ -40,6 +40,11 @@ GetConptyContext :: proc(h : mem.Handle) -> ^ConptyContext {
 	return mem.Get(&conpty_contexts, h)
 }
 
+// 池本体(枚举用,与 canvas.GetConsoles 同形)。池包私有 —— 外部要遍历只能经这里。
+GetConptyContexts :: proc() -> ^mem.GenArray(MAX_CONPTY_SLOTS, ConptyContext) {
+	return &conpty_contexts
+}
+
 createConptyContextValue :: proc(size: win.COORD, cmd: string, cwd: string) -> (ctx: ConptyContext, ok: bool = false) {
 	conpty_side_read : win.HANDLE // ConPTY 端读(子进程键盘事件)
 	main_side_write  : win.HANDLE // 我们写键盘输入
