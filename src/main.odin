@@ -61,7 +61,7 @@ main :: proc() {
 			need := conpty.AnyRingHasData() ||
 			        event.RelevantEventsPending() ||
 			        canvas.CommandPipePending()
-	
+		
 			// 开关关掉时整块调度逻辑摘除:不判 need、不阻塞,无条件跑帧(旧行为)。
 			// 用途:出现可疑行为时用它隔离"是不是阻塞引入的"。
 			if render.GetBlockLoop() && !need && timeout_ms > 0 {
