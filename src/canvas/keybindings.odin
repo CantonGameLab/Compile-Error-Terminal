@@ -156,7 +156,8 @@ sendSGR :: proc(console : ^Console, cb : u8, col, row : int, release : bool) {
 	if release {
 		final = 'm'
 	}
-	msg := fmt.tprintf("\x1b[<%d;%d;%d%c", cb, col, row, final)
+	msg := fmt.aprintf("\x1b[<%d;%d;%d%c", cb, col, row, final)
+	defer delete(msg) // aprintf 用 context.allocator,与 delete 匹配
 	ct.WriteConptyInput(console.conpty_handle, transmute([]byte)msg)
 }
 

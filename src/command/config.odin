@@ -79,15 +79,19 @@ configRunText :: proc(text, path : string, stats : ^ConfigStats) {
 		}
 		stats.lines += 1
 		ret, ok := executeString(line, errbuf[:])
+		// 循环体里显式释放,不用 defer:defer 是作用域级(函数级)的,放循环里
+		// 要等整个函数退出才跑,每轮都攒一份(实测见 playground/deferprobe)
 		if !ok {
 			// ok=false 必有原因(executeString 保证),ret 就是原因
 			fmt.eprintfln("config %s:%d shat itself: %s. Alacritty rewrites its config format every other release and never apologizes; I at least give you a line number.", path, line_no, ret)
+			delete(ret)
 			stats.failed += 1
 			continue
 		}
 		if ret != "" {
 			fmt.print(ret) // 查询类命令的回显(多行,已带换行)
 		}
+		delete(ret)
 		stats.applied += 1
 	}
 }

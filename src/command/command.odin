@@ -1,9 +1,12 @@
 // 指令语法解析 + 数据化命令执行(动作层唯一入口):
 //   ParseCommandString / ParseCommandStringEx:字符串 → ParsedCommand(命令数据;Ex 带失败原因)
 //   FormatCommand:ParsedCommand → 可再解析的字符串(逆变换:bindings 回显 / 配置写回 / 探针往返)
-//   ExecuteCommandString:字符串快捷入口(解析 + 执行 + 释放子命令槽)
+//   executeString:字符串快捷入口(解析 + 执行 + 释放子命令槽)
 //   ExecuteCommand:ParsedCommand → 各模块 userapi(唯一命令解释器;绑定表与配置文件
 //     产生的命令数据也走这里,不做第二次分派)
+// 两者返回的 ret 是**堆字符串,所有权归调用方 —— 调用方必须 delete(ret)**。
+// 不是包级缓冲:一个函数里要收 20 多处输出,而 Odin 的 string 是 16 字节胖值,
+// 返回它会写进调用者栈帧,落在栈缓冲的头部把它踩掉(playground/outprobe 实测)。
 // 语法/参数形态/相位/帮助全部来自 spec.odin 的 COMMAND_SPECS(本文件不写命令名特判)。
 // 语法:命令名 参数... [@id]
 //   - 参数按空格分隔,"..." 包裹字符串(字符串内不能含引号);命令名/键名大小写不敏感
@@ -121,9 +124,6 @@ MAX_SUB_COMMANDS :: 32
 
 sub_commands : mem.GenArray(MAX_SUB_COMMANDS, ParsedCommand)
 
-// ---------------------------------------------------------------------------
-// 入口
-// ---------------------------------------------------------------------------
 // 每帧唯一入口(main,canvas.Update 之前):键绑定消费(命中即置 consumed)+
 // 命令信道消费(轮询 canvas 各 CommandPoll;结果写回事件槽,生产者帧内回读)。
 Update :: proc() {
@@ -131,45 +131,22 @@ Update :: proc() {
 	processCommandEvents()
 }
 
-// 命令输出缓冲(包级复用,和 config_resolve_buf / update_scratch 同一种做法)。
-// 返回值借用它 —— 只在到下一次 ExecuteCommand / executeString 之前有效。
-// 不要跨调用持有;也不要在一次执行内部嵌套调用后还指望外层的 ret 存活。
-ret_buf : [cv.MAX_RET]u8
-ret_len : int
-
-// 追加一条输出(每条的末尾补 '\n',所以多行 ret 以 '\n' 收尾)。
-// 不复用 out 回调:缓冲有界,直接写就行,调用方每次都重置。
-retWrite :: proc(msg : string) {
-	space := len(ret_buf) - ret_len
-	if space <= 0 {
-		return
-	}
-	n := min(len(msg), space)
-	copy(ret_buf[ret_len:], msg[:n])
-	ret_len += n
-	if ret_len < len(ret_buf) {
-		ret_buf[ret_len] = '\n'
-		ret_len += 1
-	}
-}
-
-// 解析 + 执行 + 释放子命令槽;ret = 产出文本(可多行,失败原因也在里面)。
-// ret 借用包级缓冲(见上),ok = 成败。
+// 解析 + 执行 + 释放子命令槽;ret = 产出文本(堆,调用方 delete)。
 executeString :: proc(s : string, errbuf : []u8) -> (ret : string, ok : bool) {
-	ret_len = 0
 	cmd, perr, pok := ParseCommandStringEx(s, errbuf)
 	if !pok {
-		retWrite(perr)
-		return string(ret_buf[:ret_len]), false
+		ret = perr
+		ok = false
+		return 
 	}
+	defer delete(perr)
 	defer if cmd.sub.id != 0 {
 		mem.Free(&sub_commands, cmd.sub)
 	}
-	ok = execCmd(cmd)
-	if !ok && ret_len == 0 {
-		retWrite("执行失败") // ok=false 必有原因,消费者不必再兜底
-	}
-	return string(ret_buf[:ret_len]), ok
+	ans, ecok := ExecuteCommand(cmd)
+	ok = ecok
+	ret = ans
+	return
 }
 
 // ---------------------------------------------------------------------------
@@ -177,17 +154,9 @@ executeString :: proc(s : string, errbuf : []u8) -> (ret : string, ok : bool) {
 // ---------------------------------------------------------------------------
 // 单窗模式(Single)的树/焦点/尺寸禁用规则在 canvas 域边界(userapi 内 singleGuard)
 // 统一判定:命令拦不拦,userapi 自己按当前页语义拒绝。
-// ret 产出直接进包级缓冲(retWrite),不经回调 —— 调用方拿返回值即可。
-ExecuteCommand :: proc(cmd : ParsedCommand) -> (ret : string, ok : bool) {
-	ret_len = 0
-	ok = execCmd(cmd)
-	if !ok && ret_len == 0 {
-		retWrite("执行失败")
-	}
-	return string(ret_buf[:ret_len]), ok
-}
+// 输出走传入的 out(栈缓冲),ret 不在这里成形 —— 见 CmdOut 段。
 
-execCmd :: proc(cmd : ParsedCommand) -> bool {
+ExecuteCommand :: proc(cmd : ParsedCommand) -> (ret : string, ok : bool) {
 	switch cmd.kind {
 	// ---- 窗口树 / 焦点 ----
 	case .Split:
@@ -196,30 +165,30 @@ execCmd :: proc(cmd : ParsedCommand) -> bool {
 		if factor <= 0 {
 			factor = 0.5
 		}
-		return cv.SplitNewWindow(cmd.dir, cmd.target, cmd.split_first, factor) != mem.Handle {}
+		ok = cv.SplitNewWindow(cmd.dir, cmd.target, cmd.split_first, factor) != mem.Handle {}
 	case .FocusId:
-		return cv.SetFocusWindow(cmd.target)
+		ok = cv.SetFocusWindow(cmd.target)
 	case .FocusDir:
-		return cv.FocusMove(cmd.fdir, cmd.target)
+		ok = cv.FocusMove(cmd.fdir, cmd.target)
 	case .Destroy:
-		return cv.DestroyWindow(cmd.target)
+		ok = cv.DestroyWindow(cmd.target)
 	case .Factor:
-		return cv.SetSplitFactor(cmd.fval, cmd.target)
+		ok = cv.SetSplitFactor(cmd.fval, cmd.target)
 	case .FactorLeaf:
-		return cv.SetSplitFactorLeaf(cmd.ival, cmd.fval)
+		ok = cv.SetSplitFactorLeaf(cmd.ival, cmd.fval)
 	case .SplitTypeToggle:
-		return cv.ToggleSplitType(cmd.target)
+		ok = cv.ToggleSplitType(cmd.target)
 	case .Exchange:
-		return cv.ExchangeWindow(cmd.fdir, cmd.target)
+		ok = cv.ExchangeWindow(cmd.fdir, cmd.target)
 	case .Single:
 		switch cmd.mode {
 		case .On:
-			return cv.SetSingleMode(true)
+			ok = cv.SetSingleMode(true)
 		case .Off:
-			return cv.SetSingleMode(false)
+			ok = cv.SetSingleMode(false)
 		case .Toggle:
 			cv.ToggleSingleMode()
-			return true
+			ok = true
 		}
 	case .OscAuth:
 		// 授权 = 给该 console 建/销 poll(见 canvas.Console.poll_h);池满 = 授权失败
@@ -230,54 +199,54 @@ execCmd :: proc(cmd : ParsedCommand) -> bool {
 			aok, now_on = cv.SetOscAuthorized(cmd.mode == .On, cmd.target)
 		}
 		if !aok {
-			return false
+			ok = false
 		}
-		retWrite(now_on ? "osc 信道: on" : "osc 信道: off")
-		return true
+		ret = now_on ? "osc 信道: on" : "osc 信道: off"
+		ok = true
 	case .Count:
-		retWrite(fmt.tprintf("windows: %d", cv.ConsoleCount()))
-		return true
+		ret = fmt.aprintf("windows: %d", cv.ConsoleCount())
+		ok = true
 	case .Info:
 		info, ok := cv.GetConsoleInfo(cmd.target)
 		if !ok {
-			return false
+			ok = false
 		}
 		if !info.has_console {
-			retWrite(fmt.tprintf("window %d  空窗格  factor %.2f", info.node.id, info.split_factor))
+			ret = fmt.aprintf("window %d  空窗格  factor %.2f", info.node.id, info.split_factor)
 		} else {
-			retWrite(fmt.tprintf("window %d  font %s %.0f  %s %dx%d  review %d  factor %.2f",
+			ret = fmt.aprintf("window %d  font %s %.0f  %s %dx%d  review %d  factor %.2f",
 				info.node.id, info.font_name, info.font_size,
 				info.has_session ? "session" : "no-session",
-				info.cols, info.rows, info.review_line, info.split_factor))
+				info.cols, info.rows, info.review_line, info.split_factor)
 		}
-		return true
+		ok = true
 	case .FocusGet:
-		retWrite(fmt.tprintf("focus: %d", cv.GetFocusWindow().id))
-		return true
+		ret = fmt.aprintf("focus: %d", cv.GetFocusWindow().id)
+		ok = true
 	case .ConsoleSize:
 		info, sok := cv.GetConsoleInfo(cmd.target)
 		if !sok {
-			return false
+			ok = false
 		}
-		retWrite(fmt.tprintf("size: %dx%d", info.cols, info.rows))
-		return true
+		ret = fmt.aprintf("size: %dx%d", info.cols, info.rows)
+		ok = true
 	case .Head:
 		// 面板(视口)从最上面数前 n 行 —— 不是缓冲区开头(见 cv.ConsoleLineText)。
 		// ret 容量有限(MAX_RET),输出装不下就停并补一行 [truncated] ——
 		// 调用方问 x 行,要么拿到 x 行,要么明确知道被截了。
-		return headLines(cmd.ival, cmd.target)
+		ret, ok = headLines(cmd.ival, cmd.target)
 
 	// ---- 字体 / 会话 ----
 	case .Font:
-		return cv.SetConsoleFont(cmd.sval, cmd.fval, cmd.target)
+		ok = cv.SetConsoleFont(cmd.sval, cmd.fval, cmd.target)
 	case .FontSize:
-		return cv.SetConsoleFontSize(cmd.fval, cmd.target)
+		ok = cv.SetConsoleFontSize(cmd.fval, cmd.target)
 	case .FontSizeUp:
-		return cv.AdjustConsoleFontSize(2, cmd.target)
+		ok = cv.AdjustConsoleFontSize(2, cmd.target)
 	case .FontSizeDown:
-		return cv.AdjustConsoleFontSize(-2, cmd.target)
+		ok = cv.AdjustConsoleFontSize(-2, cmd.target)
 	case .Launch:
-		return cv.LaunchConsole(cmd.sval, cmd.target)
+		ok = cv.LaunchConsole(cmd.sval, cmd.target)
 	case .Feed:
 		// feed = 注入原始按键。而 OSC 载荷物理上带不了控制字节(状态机对 00-1F 是
 		// Ignore,`\r` 会被静默吞掉),所以**只有它的字符串参数**解释转义。
@@ -285,78 +254,80 @@ execCmd :: proc(cmd : ParsedCommand) -> bool {
 		fbuf : [1024]u8
 		data, dok := UnescapeArg(cmd.sval, fbuf[:])
 		if !dok {
-			return false // 超长:拒收,不静默截断(调用方/信道上会看到失败)
+			ok = false // 超长:拒收,不静默截断(调用方/信道上会看到失败)
 		}
-		return cv.FeedConsole(data, cmd.target)
+		ok = cv.FeedConsole(data, cmd.target)
 	case .ClearConsole:
-		return cv.ClearConsoleSession(cmd.target)
+		ok = cv.ClearConsoleSession(cmd.target)
 	case .Scroll:
-		return cv.ConsoleScroll(int(cmd.fval), cmd.target)
+		ok = cv.ConsoleScroll(int(cmd.fval), cmd.target)
 	case .ReviewUp:
-		return cv.ConsoleScroll(-focusRows(cmd.target), cmd.target)
+		ok = cv.ConsoleScroll(-focusRows(cmd.target), cmd.target)
 	case .ReviewDown:
-		return cv.ConsoleScroll(focusRows(cmd.target), cmd.target)
+		ok = cv.ConsoleScroll(focusRows(cmd.target), cmd.target)
 	case .ExitReview:
-		return cv.ConsoleExitReview(cmd.target)
+		ok = cv.ConsoleExitReview(cmd.target)
 
 	// ---- 页 ----
 	case .PageNew:
 		page_h := cv.PageNew()
 		if page_h.id == 0 {
-			return false
+			ok = false
 		}
 		if cmd.sval != "" {
 			cv.PageSetTitle(page_h, cmd.sval)
 		}
-		return true
+		ok = true
 	case .PageSwitch:
 		page_h := cv.PageByIndex(cmd.ival)
 		if page_h.id == 0 {
-			return false
+			ok = false
 		}
-		return cv.PageSwitch(page_h)
+		ok = cv.PageSwitch(page_h)
 	case .PageNext:
-		return cv.PageNext()
+		ok = cv.PageNext()
 	case .PagePrev:
-		return cv.PagePrev()
+		ok = cv.PagePrev()
 	case .PageClose:
 		page_h := cv.PageCurrent()
 		if cmd.ival > 0 {
 			page_h = cv.PageByIndex(cmd.ival)
 		}
 		if page_h.id == 0 {
-			return false
+			ok = false
 		}
-		return cv.PageDestroy(page_h)
+		ok = cv.PageDestroy(page_h)
 	case .PageTitle:
 		page_h := cv.PageCurrent()
 		if cmd.ival > 0 {
 			page_h = cv.PageByIndex(cmd.ival)
 		}
 		if page_h.id == 0 {
-			return false
+			ok = false
 		}
-		return cv.PageSetTitle(page_h, cmd.sval)
+		ok = cv.PageSetTitle(page_h, cmd.sval)
 	case .PageList:
 		cur := cv.PageCurrent()
 		n := cv.PageCount()
 		for i in 1 ..= n {
 			page_h := cv.PageByIndex(i)
 			mark := page_h == cur ? "*" : " "
-			retWrite(fmt.tprintf("%s %d  %s", mark, i, cv.PageTitle(page_h)))
+			s := fmt.aprintf("%s %d  %s", mark, i, cv.PageTitle(page_h))
+			defer delete(s) // defer 是作用域级的:循环体每轮就释放,不跨迭代累积
+			cmdOutAppend(out, s)
 		}
-		return true
+		ok = true
 
 	// ---- 选区 / 剪贴板 ----
 	case .CopySelection:
-		return cv.CopySelection()
+		ok = cv.CopySelection()
 	case .PasteClipboard:
-		return cv.PasteClipboard()
+		ok = cv.PasteClipboard()
 	case .SelectionClear:
 		cv.SelectionClear()
-		return true
+		ok = true
 	case .SelectAll:
-		return cv.SelectionSelectAll()
+		ok = cv.SelectionSelectAll()
 
 	// ---- 外观 / UI ----
 	case .Theme:
@@ -369,18 +340,20 @@ execCmd :: proc(cmd : ParsedCommand) -> bool {
 					continue
 				}
 				mark := &slot.theme == cur ? "*" : " "
-				retWrite(fmt.tprintf("%s %s", mark, string(slot.name[:slot.name_len])))
+				s := fmt.aprintf("%s %s", mark, string(slot.name[:slot.name_len]))
+				defer delete(s)
+				cmdOutAppend(out, s)
 			}
-			return true
+			ok = true
 		}
-		return cv.SetThemeByName(cmd.sval)
+		ok = cv.SetThemeByName(cmd.sval)
 	case .ThemeSet:
-		return cv.SetThemeField(cmd.sval, cmd.tfield, cmd.tindex, cmd.color)
+		ok = cv.SetThemeField(cmd.sval, cmd.tfield, cmd.tindex, cmd.color)
 	case .UIFont:
-		return cv.SetUIFont(cmd.sval, cmd.fval)
+		ok = cv.SetUIFont(cmd.sval, cmd.fval)
 	case .UIFontReset:
 		cv.ResetUIFont()
-		return true
+		ok = true
 	case .Borderless:
 		on := rnd.GetWindowBorderless()
 		switch cmd.mode {
@@ -392,7 +365,7 @@ execCmd :: proc(cmd : ParsedCommand) -> bool {
 			on = !on
 		}
 		rnd.SetWindowBorderless(on)
-		return true
+		ok = true
 	case .VSync:
 		on := rnd.GetVSync()
 		switch cmd.mode {
@@ -404,81 +377,93 @@ execCmd :: proc(cmd : ParsedCommand) -> bool {
 			on = !on
 		}
 		rnd.SetVSync(on)
-		return true
+		ok = true
 	case .BgShader:
 		if cmd.sval == "" {
-			return rnd.ResetBackgroundShader()
+			ok = rnd.ResetBackgroundShader()
 		}
-		return rnd.SetBackgroundShaderFile(cmd.sval)
+		ok = rnd.SetBackgroundShaderFile(cmd.sval)
 	case .ToggleCommandBar:
 		cv.ToggleCommandBar()
-		return true
+		ok = true
 	case .DefaultLaunch:
 		cv.SetDefaultLaunch(cmd.sval, cmd.sval2, cmd.fval)
-		return true
+		ok = true
 	case .Load:
-		return configLoadFile(cmd.sval)
+		ok = configLoadFile(cmd.sval)
 	case .Cwd:
 		// 无参数 = 查询(会话记忆目录 + 配置默认);有参数 = 设置配置默认
 		if len(cmd.sval) == 0 {
 			sess := cv.FocusedConsoleCwd()
 			def := cv.GetSessionCwd()
 			if len(sess) > 0 {
-				retWrite(fmt.tprintf("cwd(焦点会话): %s", sess))
+				s := fmt.aprintf("cwd(焦点会话): %s", sess)
+				defer delete(s)
+				cmdOutAppend(out, s)
 			}
 			if len(def) > 0 {
-				retWrite(fmt.tprintf("cwd(配置默认): %s", def))
+				s := fmt.aprintf("cwd(配置默认): %s", def)
+				defer delete(s)
+				cmdOutAppend(out, s)
 			}
 			if len(sess) == 0 && len(def) == 0 {
-				retWrite("cwd: (都没有 —— 新会话继承 CETerm 进程目录)")
+				cmdOutAppend(out, "cwd: (都没有 —— 新会话继承 CETerm 进程目录)")
 			}
-			return true
+			ok = true
 		}
 		cv.SetSessionCwd(cmd.sval)
-		return true
+		ok = true
 
 	// ---- 键位 ----
 	case .SetBinding:
 		// 子命令已由解析层解析入表(sub 句柄),执行只读
 		sub := mem.Get(&sub_commands, cmd.sub)
 		if sub == nil {
-			return false
+			ok = false
 		}
-		return SetKeyBinding(inp.Scancode(cmd.sc), cmd.mods, sub^)
+		ok = SetKeyBinding(inp.Scancode(cmd.sc), cmd.mods, sub^)
 	case .UnsetBinding:
-		return UnsetKeyBinding(inp.Scancode(cmd.sc), cmd.mods)
+		ok = UnsetKeyBinding(inp.Scancode(cmd.sc), cmd.mods)
 	case .BindingsGet:
 		kb := GetKeyBindings()
 		if kb.count == 0 {
-			retWrite("(no bindings)")
+			cmdOutAppend(out, "(no bindings)")
 		}
 		for i in 0 ..< kb.count {
 			b := &kb.bindings[i]
 			combo : [64]u8
 			sub_buf : [256]u8
 			sub := FormatCommand(b.cmd, sub_buf[:])
-			retWrite(fmt.tprintf("bind %s \"%s\"", comboName(b.mods, b.key, &combo), sub))
+			s := fmt.aprintf("bind %s \"%s\"", comboName(b.mods, b.key, &combo), sub)
+			defer delete(s)
+			cmdOutAppend(out, s)
 		}
-		return true
+		ok = true
 
 	// ---- 帮助 ----
 	case .Help:
 		if cmd.sval != "" {
 			spec := findSpec(cmd.sval)
 			if spec == nil {
-				return false
+				ok = false
 			}
-			retWrite(fmt.tprintf("%s %s  — %s", spec.name, spec.usage, spec.help))
-			return true
+			s := fmt.aprintf("%s %s  — %s", spec.name, spec.usage, spec.help)
+			defer delete(s)
+			cmdOutAppend(out, s)
+			ok = true
 		}
 		for i in 0 ..< len(COMMAND_SPECS) {
-			s := &COMMAND_SPECS[i]
-			retWrite(fmt.tprintf("%s %s", s.name, s.usage))
+			spec := &COMMAND_SPECS[i]
+			s := fmt.aprintf("%s %s", spec.name, spec.usage)
+			defer delete(s)
+			cmdOutAppend(out, s)
 		}
-		retWrite("help <命令> 查看单条说明")
-		return true
+		cmdOutAppend(out, "help <命令> 查看单条说明")
+		ok = true
+	case:
+		ok = false
 	}
-	return false
+
 }
 
 // head 输出被 ret 容量截断时的尾行标记(见 headLines)
@@ -487,23 +472,32 @@ HEAD_TRUNC :: "[truncated]"
 // 取**面板**(视口)最上面 n 行的文本。超出面板行数 = 给多少算多少。
 // 预算 = MAX_RET:装不下就停并补一行 [truncated] —— 调用方问 x 行,要么拿到 x 行,
 // 要么明确知道被截了(静默丢会让"输出 x 行"这个量化变成假的)。
-headLines :: proc(n : int, target : mem.Handle) -> bool {
+
+headLines :: proc(n : int, target : mem.Handle) -> (ret : string, ok : bool) {
 	if n <= 0 {
-		return true
+		ok = true
+		return
 	}
 	linebuf : [1024]u8
 	for i in 0 ..< n {
 		text, ok := cv.ConsoleLineText(i, linebuf[:], target)
+		defer delete(text)
 		if !ok {
 			break // 没有更多行了
 		}
-		if ret_len + len(text) + 1 > cv.MAX_RET - len(HEAD_TRUNC) - 1 {
-			retWrite(HEAD_TRUNC) // 每条 retWrite 末尾还会补一个 '\n',所以留出它的位置
-			return true
+		if len(ret) + len(text) + 1 > cv.MAX_RET - len(HEAD_TRUNC) - 1 {
+			prev_ret := ret
+			defer delete(prev_ret)
+			ret = strings.concatenate({ret, HEAD_TRUNC})
+			ok = true
+			return
 		}
-		retWrite(text)
+		prev_ret := ret
+		defer delete(prev_ret)
+		ret = strings.concatenate({ret, text})
 	}
-	return true
+	ok = true
+	return
 }
 
 // 焦点(或 target)窗格 console 的行数;无 console 返回 0(翻页/滚动安全空转)
@@ -670,7 +664,7 @@ ParseCommandString :: proc(s : string) -> (ParsedCommand, bool) {
 	return pc, ok
 }
 
-// 释放解析期分配的附随资源(子命令槽)。ExecuteCommandString 内部已处理;
+// 释放解析期分配的附随资源(子命令槽)。executeString / ExecuteCommand 内部已处理;
 // 直接调 ParseCommandString 的调用者必须对结果调用本函数(避免槽泄漏)。
 FreeParsedCommand :: proc(cmd : ParsedCommand) {
 	if cmd.sub.id != 0 {

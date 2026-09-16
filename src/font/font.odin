@@ -428,14 +428,18 @@ buildFontIndex :: proc() {
 	// 而 registryFontPath 只读 HKLM)→ 靠本目录按"文件内 family 名"索引兜住。
 	if local := os.get_env("LOCALAPPDATA", context.allocator); len(local) > 0 {
 		defer delete(local)
-		scanFontDir(fmt.tprintf("%s\\Microsoft\\Windows\\Fonts", local))
+		dir := fmt.aprintf("%s\\Microsoft\\Windows\\Fonts", local)
+		defer delete(dir) // aprintf 用 context.allocator,与 delete 匹配
+		scanFontDir(dir)
 	}
 	// 项目内置字体(<资源根>/font/<FamilyDir>):未安装到系统的机器同样可解析
-	font_root := paths.Resource("font") // 借用:下方 tprintf 自行分配,不会覆盖它
+	font_root := paths.Resource("font") // 借用:下方 aprintf 自行分配,不会覆盖它
 	if entries, err := os.read_directory_by_path(font_root, -1, context.allocator); err == nil {
 		for e in entries {
 			if e.type == .Directory {
-				scanFontDir(fmt.tprintf("%s/%s", font_root, e.name))
+				dir := fmt.aprintf("%s/%s", font_root, e.name)
+				defer delete(dir) // 作用域级 defer:循环每轮释放,不跨迭代累积
+				scanFontDir(dir)
 			}
 		}
 		os.file_info_slice_delete(entries, context.allocator)

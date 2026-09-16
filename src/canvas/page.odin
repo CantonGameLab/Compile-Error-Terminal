@@ -289,7 +289,8 @@ pageSetTitleNum :: proc(page_h : mem.Handle, n : u32) {
 	if p == nil {
 		return
 	}
-	s := fmt.tprintf("%d", n)
+	s := fmt.aprintf("%d", n)
+	defer delete(s) // aprintf 用 context.allocator,与 delete 匹配
 	nn := min(len(s), 31)
 	copy(p.title[:nn], s)
 	p.title_len = u8(nn)

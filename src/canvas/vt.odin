@@ -343,7 +343,9 @@ oscReplyClipboard :: proc(console_h : mem.Handle) {
 	if len(s) > max_enc {
 		s = s[:max_enc & ~int(3)]
 	}
-	oscReply(console_h, fmt.tprintf("52;c;%s", s))
+	msg := fmt.aprintf("52;c;%s", s)
+	defer delete(msg)
+	oscReply(console_h, msg)
 }
 
 // OSC 应答统一出口:ESC ] <msg> ESC \(与图形协议应答风格一致;BEL 仅在接收侧兼容)
@@ -1076,7 +1078,8 @@ vtReplyCursor :: proc(console_h : mem.Handle) {
 		return
 	}
 	r, c := cursorScreenPos(console)
-	msg := fmt.tprintf("\x1b[%d;%dR", r + 1, c + 1)
+	msg := fmt.aprintf("\x1b[%d;%dR", r + 1, c + 1)
+	defer delete(msg) // aprintf 用 context.allocator,与 delete 匹配;回应答即还
 	ct.WriteConptyInput(console.conpty_handle, transmute([]byte)msg)
 }
 
@@ -1087,7 +1090,8 @@ vtReplyCursorDec :: proc(console_h : mem.Handle) {
 		return
 	}
 	r, c := cursorScreenPos(console)
-	msg := fmt.tprintf("\x1b[?%d;%dR", r + 1, c + 1)
+	msg := fmt.aprintf("\x1b[?%d;%dR", r + 1, c + 1)
+	defer delete(msg)
 	ct.WriteConptyInput(console.conpty_handle, transmute([]byte)msg)
 }
 
@@ -1097,7 +1101,8 @@ vtReplyWindowSize :: proc(console_h : mem.Handle) {
 	if console == nil {
 		return
 	}
-	msg := fmt.tprintf("\x1b[8;%d;%dt", console.rows, console.cols)
+	msg := fmt.aprintf("\x1b[8;%d;%dt", console.rows, console.cols)
+	defer delete(msg)
 	ct.WriteConptyInput(console.conpty_handle, transmute([]byte)msg)
 }
 
@@ -1124,7 +1129,8 @@ vtReplyDa2 :: proc(console_h : mem.Handle) {
 	if console == nil {
 		return
 	}
-	msg := fmt.tprintf("\x1b[>0;%d;0c", DA2_VERSION)
+	msg := fmt.aprintf("\x1b[>0;%d;0c", DA2_VERSION)
+	defer delete(msg)
 	ct.WriteConptyInput(console.conpty_handle, transmute([]byte)msg)
 }
 
@@ -1135,7 +1141,8 @@ vtReplyDecrqm :: proc(console_h : mem.Handle, mode : int) {
 		return
 	}
 	state := vtQueryMode(console, mode)
-	msg := fmt.tprintf("\x1b[?%d;%d$y", mode, state)
+	msg := fmt.aprintf("\x1b[?%d;%d$y", mode, state)
+	defer delete(msg)
 	ct.WriteConptyInput(console.conpty_handle, transmute([]byte)msg)
 }
 

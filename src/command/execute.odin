@@ -32,12 +32,15 @@ processCommandEvents :: proc() {
 				// 不产出 ret:输出一并丢弃 —— 维持不变式 None ⟹ ret_len == 0
 				ev.ret_status = .None
 				ev.ret_len = 0
-				continue
+			} else {
+				n := min(len(ret), len(ev.ret))
+				copy(ev.ret[:n], ret)
+				ev.ret_len = u16(n)
+				ev.ret_status = ok ? .Ok : .Err
 			}
-			n := min(len(ret), len(ev.ret))
-			copy(ev.ret[:n], ret)
-			ev.ret_len = u16(n)
-			ev.ret_status = ok ? .Ok : .Err
+			// 循环体里显式释放,不用 defer:defer 是作用域级(函数级)的,
+			// 放在循环体里要等整个函数退出才跑,每轮都会攒一份(实测见 playground/deferprobe)
+			delete(ret)
 		}
 	}
 }

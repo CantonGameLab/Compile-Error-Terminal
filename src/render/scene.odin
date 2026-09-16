@@ -89,7 +89,8 @@ drawFps :: proc() {
 	if m.cell_width <= 0 || m.cell_height <= 0 {
 		return
 	}
-	text := fmt.tprintf("%.0f fps", fps_value)
+	text := fmt.aprintf("%.0f fps", fps_value)
+	defer delete(text) // aprintf 用 context.allocator,与 delete 匹配;每帧画完即还
 	text_w := f32(len(text)) * m.cell_width
 	r := cv.FpsTagRect()
 	DrawRect(r.position_x, r.position_y, r.width, r.height, theme.fps_bg)
