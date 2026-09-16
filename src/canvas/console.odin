@@ -128,6 +128,12 @@ GetConsole :: proc(h : mem.Handle) -> ^Console {
 	return mem.Get(&consoles, h)
 }
 
+// 池本体(枚举用;与 GetCommandPolls 同形,持有者不碰内部字段,只拿句柄)。
+// 池是包私有 —— 外部(探针)要遍历必须经这里,不许绕过池抽象。
+GetConsoles :: proc() -> ^mem.GenArray(MAX_CONSOLE_SLOTS, Console) {
+	return &consoles
+}
+
 // 取 leaf 节点挂载的 console;空窗格/内部节点返回 nil
 NodeConsole :: proc(node_h : mem.Handle) -> ^Console {
 	return GetConsole(NodeConsoleId(node_h))

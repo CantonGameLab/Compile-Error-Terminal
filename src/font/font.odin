@@ -72,7 +72,16 @@ Face :: struct {
 	sfnt_off : int, // sfnt 目录偏移(TTC 非 0),表定位用
 }
 
-// 字形缓存条目(哈希表,线性探测)
+// 字形缓存条目(哈希表,线性探测)。
+//
+// **不要改成 #soa**:看着像教科书 SoA 场景(探测只比 cp/gid 6 字节,却要走 40 字节步长),
+// 实测是负收益。端到端压测(playground/glyphcachetest ⑥,300 字形全命中 × 600 万次):
+//   AoS 4.3–4.8 ns/次(210–234 M/s) vs SoA 5.8–6.1 ns/次(164–173 M/s)—— **SoA 慢 ~24%**。
+// 原因(playground/probechain 实测):真实负载下 300 项 / 512 桶,探测链**平均 1.00、最长 1**,
+// 一次就命中 —— 没有冲突链,SoA 就没有可省的东西;而命中后 `glyphFromSlot` 要取回 9 个
+// 字段,SoA 是 9 个数组基址 + 跨步寻址,AoS 是一次 40 字节连续读(同一 cache line)。
+// 合成基准(playground/soabench)曾测出 +12%,那是它人为把探测链拉长到多步 —— 长度是
+// 唯一能让 SoA 在这里赢的变量,而真实表没有。
 GlyphSlot :: struct {
 	cp : rune, // 0 = 无 cp(可能是 gid 槽)
 	gid : u16, // 连体字形(内部 id);0 = 无。空槽 = cp==0 && gid==0

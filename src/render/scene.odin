@@ -7,6 +7,7 @@ package render
 import cv "../canvas"
 import fnt "../font"
 import mem "../memory"
+import prof "../profile"
 import s3 "vendor:sdl3"
 import "core:fmt"
 import "core:time"
@@ -18,18 +19,29 @@ import "core:time"
 DrawFrame :: proc() {
 	p := cv.CurrentPage()
 	single := p != nil && p.view_mode == .Single
+	t0 := prof.Now()
 	drawWalk(cv.WindowTreeRoot(), true, single)
 	// 背景延伸成员(均在背景 pass 前进背景批 → 与内容区同一 shader):
 	//   焦点描边 + 激活页签底(输入色 = theme.bg → shader 后同值,无缝融合)
 	drawFocusBorder()
 	drawTabBarActiveBg()
+	t1 := prof.Now()
+	prof.Mark("    scene:bg 趟(收集+描边)", t0, t1)
 	drawBackgroundPass(f32(s3.GetTicks()) / 1000.0) // 背景批 → FBO → 背景 shader
+	t2 := prof.Now()
+	prof.Mark("    scene:bgshader pass", t1, t2)
 	drawWalk(cv.WindowTreeRoot(), false, single)
+	t3 := prof.Now()
+	prof.Mark("    scene:fg 趟(字形+分割条)", t2, t3)
 	// 底部页签条(状态栏雏形):条底 + 页签 + 右侧工具区(命令栏输入框、FPS)
 	drawTabBar()
 	drawCommandBar()
 	drawFps()
+	t4 := prof.Now()
+	prof.Mark("    scene:tabbar/bar/fps", t3, t4)
 	flushBatch()
+	t5 := prof.Now()
+	prof.Mark("    scene:flushBatch", t4, t5)
 
 	drawWalk :: proc(node_h : mem.Handle, bg : bool, single : bool) {
 		node := cv.GetWindowTreeNode(node_h)

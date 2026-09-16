@@ -8,6 +8,7 @@ import gl "vendor:OpenGL"
 import fnt "../font"
 import mem "../memory"
 import paths "../paths"
+import prof "../profile"
 import "core:c"
 import "core:fmt"
 import "core:math"
@@ -209,9 +210,16 @@ GetVSync :: proc() -> bool {
 
 
 Update :: proc() {
+	t0 := prof.Now()
 	BeginFrame()
+	t1 := prof.Now()
+	prof.Mark("    render:BeginFrame", t0, t1)
 	DrawFrame() // 内含背景 pass(scene 层统一帧序)
+	t2 := prof.Now()
+	prof.Mark("    render:DrawFrame 合计", t1, t2)
 	EndFrame()
+	t3 := prof.Now()
+	prof.Mark("    render:EndFrame(swap)", t2, t3)
 }
 
 BeginFrame :: proc() {

@@ -9,20 +9,32 @@ package canvas
 
 import mem "../memory"
 import inp "../input"
+import prof "../profile"
 import "core:fmt"
 
 Update :: proc() -> bool {
+	t0 := prof.Now()
 	ConsoleUpdateTree(WindowTreeRoot()) // 更新 WindowTree 的 layout + 消费输出
+	t1 := prof.Now()
+	prof.Mark("  canvas:ConsoleUpdateTree", t0, t1)
 	if !PollSessions() {
 		fmt.println("all sessions ended. Nothing left to draw. A garbage collector would have stop-the-world'd for 200ms and then collected the wrong session anyway. Post-nut clarity, terminal edition — I'll show myself out.")
 		return false
 	}
+	t2 := prof.Now()
+	prof.Mark("  canvas:PollSessions", t1, t2)
 
 	CommandBarReap() // 命令信道回读(本栏 poll;已执行 → 打结果/失败原因)
+	t3 := prof.Now()
+	prof.Mark("  canvas:CommandBarReap", t2, t3)
 
 	SelectionValidate() // 选区自愈(buffer 数据链验证;失效即清,渲染前定稿)
+	t4 := prof.Now()
+	prof.Mark("  canvas:SelectionValidate", t3, t4)
 
 	ProcessMouse()
+	t5 := prof.Now()
+	prof.Mark("  canvas:ProcessMouse", t4, t5)
 
 	if CommandBarVisible() {
 		if buf := inp.TakeAppInput(); len(buf) > 0 {
@@ -33,6 +45,8 @@ Update :: proc() -> bool {
 			FeedConsole(buf)
 		}
 	}
+	t6 := prof.Now()
+	prof.Mark("  canvas:文本路由", t5, t6)
 
 
 	return true
