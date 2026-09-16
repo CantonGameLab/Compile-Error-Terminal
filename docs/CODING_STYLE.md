@@ -6,6 +6,7 @@
 >
 > 完整体系(理念 + 规范 + 检查清单)见 skill:`dod-engineer`
 > (`.dsh/skills/dod-engineer/SKILL.md`)。
+> 架构、数据结构与接口分层见 [`DESIGN.md`](DESIGN.md)。
 
 ---
 
