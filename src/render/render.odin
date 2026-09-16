@@ -8,7 +8,6 @@ import gl "vendor:OpenGL"
 import fnt "../font"
 import mem "../memory"
 import paths "../paths"
-import prof "../profile"
 import "core:c"
 import "core:fmt"
 import "core:math"
@@ -86,7 +85,7 @@ Init :: proc() -> bool {
 	s3.GL_SetAttribute(.CONTEXT_PROFILE_MASK, c.int(s3.GLProfile{.CORE}))
 	s3.GL_SetAttribute(.DOUBLEBUFFER, 1)
 	s3.GL_SetAttribute(.MULTISAMPLEBUFFERS, 1)
-	s3.GL_SetAttribute(.MULTISAMPLESAMPLES, 4)
+	s3.GL_SetAttribute(.MULTISAMPLESAMPLES, 8)
 
 	gl_context = s3.GL_CreateContext(window)
 	if gl_context == nil {
@@ -204,22 +203,58 @@ GetVSync :: proc() -> bool {
 	return vsync_on
 }
 
+// 本帧产出计量(探针用):静止画面下若恒为 0,说明渲染本身已经是"没变就不产四边形",
+// 缺的只是"没产出就别提交"。由 MarkQuads 在帧尾记录。
+draw_calls : int // flush 次数(9 = 真的画了;0 = 整帧没提交任何批)
+
+// 累计产出(只增不减):主批与背景批分开计。
+// 不能直接用 quad_count + bg_quad_count 之差 —— flushBatch/flushBgBatch 会把它们清零,
+// 差值会变成垃圾(bgshader 那一趟正好会触发 flushBgBatch)。
+quads_fg_total : int // pushQuad 累计
+quads_bg_total : int // pushBgQuad 累计
+
+// 分趟产出计量:帧首 ResetSects,各趟 SectBegin/SectEnd,帧尾 MarkQuads 一并上报。
+// 分趟之和 != 合计就说明有趟漏计量。
+SECT_MAX :: 24
+sect_names : [SECT_MAX]string
+sect_quads : [SECT_MAX]int
+sect_n : int
+
+ResetSects :: proc() {
+	sect_n = 0
+}
+
+SectBegin :: proc(name : string) {
+	if sect_n >= SECT_MAX {
+		return
+	}
+	sect_names[sect_n] = name
+	sect_quads[sect_n] = -(quads_fg_total + quads_bg_total) // 负数暂存起点
+	sect_n += 1
+}
+
+SectEnd :: proc() {
+	if sect_n <= 0 {
+		return
+	}
+	sect_quads[sect_n - 1] += quads_fg_total + quads_bg_total
+}
+
+// 帧首清零(由 BeginFrame 调)
+ResetQuadTotals :: proc() {
+	quads_fg_total = 0
+	quads_bg_total = 0
+}
+
 // ---------------------------------------------------------------------------
 // 帧
 // ---------------------------------------------------------------------------
 
 
 Update :: proc() {
-	t0 := prof.Now()
 	BeginFrame()
-	t1 := prof.Now()
-	prof.Mark("    render:BeginFrame", t0, t1)
 	DrawFrame() // 内含背景 pass(scene 层统一帧序)
-	t2 := prof.Now()
-	prof.Mark("    render:DrawFrame 合计", t1, t2)
 	EndFrame()
-	t3 := prof.Now()
-	prof.Mark("    render:EndFrame(swap)", t2, t3)
 }
 
 BeginFrame :: proc() {
@@ -232,6 +267,7 @@ BeginFrame :: proc() {
 
 	quad_count = 0
 	bg_quad_count = 0
+	ResetQuadTotals() // 探针:本帧产出累计清零
 	current_tex = 0
 
 	// 主渲染状态(上一帧 nanovg flush 可能改动 blend/状态,这里重置)
@@ -318,6 +354,7 @@ pushQuad :: proc(tex : u32, x0, y0, x1, y1, u0, v0, u1, v1 : f32, color : u32, s
 	}
 	writeQuad(&quad_verts, quad_count, x0, y0, x1, y1, u0, v0, u1, v1, color, skew)
 	quad_count += 1
+	quads_fg_total += 1
 }
 
 // 背景批(固定白纹,纯色矩形;批满自动上屏到 FBO)
@@ -330,6 +367,7 @@ pushBgQuad :: proc(x0, y0, x1, y1 : f32, color : u32) {
 	}
 	writeQuad(&bg_quad_verts, bg_quad_count, x0, y0, x1, y1, 0, 0, 1, 1, color)
 	bg_quad_count += 1
+	quads_bg_total += 1
 }
 
 // 顶点写入(主批/背景批共用;坐标取整对齐像素网格:字形位图内容已含亚像素偏移
@@ -367,6 +405,7 @@ flushBatch :: proc() {
 	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
 	gl.BufferData(gl.ARRAY_BUFFER, int(quad_count * 6 * size_of(Vertex)), raw_data(quad_verts[:quad_count * 6]), gl.DYNAMIC_DRAW)
 	gl.DrawArrays(gl.TRIANGLES, 0, i32(quad_count * 6))
+	draw_calls += 1
 	quad_count = 0
 }
 
@@ -381,6 +420,7 @@ flushBgBatch :: proc() {
 	gl.BindTexture(gl.TEXTURE_2D, white_tex)
 	gl.BufferData(gl.ARRAY_BUFFER, int(bg_quad_count * 6 * size_of(Vertex)), raw_data(bg_quad_verts[:bg_quad_count * 6]), gl.DYNAMIC_DRAW)
 	gl.DrawArrays(gl.TRIANGLES, 0, i32(bg_quad_count * 6))
+	draw_calls += 1
 	bg_quad_count = 0
 }
 

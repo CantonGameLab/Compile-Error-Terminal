@@ -9,7 +9,6 @@ import "command"
 import "event"
 import "input"
 import "paths"
-import "profile"
 import "render"
 import "core:fmt"
 
@@ -35,23 +34,17 @@ main :: proc() {
 	//MAIN LOOP标准循环
 
 	for {
-		profile.Reset() // 分趟计时(编制期开关;关闭时本行与下面所有 Mark 都是空过程)
-		t_frame := profile.Now()
-
+		
 		input.BeginFrame() // 清上一帧边沿(事件泵先于本模块调用)
-		t_a := profile.Now()
 		event.Update() // 事件泵 → 分发(源模块:尺寸→canvas,键鼠→input)
-		t_b := profile.Now()
-		profile.Mark("event.Update", t_a, t_b)
+		
 		if event.QuitRequested() {
 			break
 		}
 		command.Update() // ① 命令消费(canvas 之前):键绑定(命中 → consumed)+ 命令栏队列(上帧提交)
-		t_c := profile.Now()
-		profile.Mark("command.Update", t_b, t_c)
+		
 		ret := canvas.Update() // ② 剩余:鼠标路由/文本(未消费)/树/轮询/事件读回
-		t_d := profile.Now()
-		profile.Mark("canvas.Update", t_c, t_d)
+		
 		if !ret { 
 			fmt.println("all windows closed")
 			fmt.println("Thank you for using CompileErrorTerminal (CETerm). SAILOR!")
@@ -59,11 +52,9 @@ main :: proc() {
 		}
 		// OS 窗口标题:焦点 console 的应用标题(OSC 0/2);空 = 启动标题
 		render.SyncWindowTitle(canvas.FocusedAppTitle())
-		t_e := profile.Now()
-		profile.Mark("SyncWindowTitle", t_d, t_e)
+		
 		render.Update()
-		t_f := profile.Now()
-		profile.Mark("render.Update", t_e, t_f)
-		profile.Mark("== FRAME 总墙钟", t_frame, t_f)
+		
+		
 	}
 }

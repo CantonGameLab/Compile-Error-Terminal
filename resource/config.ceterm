@@ -11,15 +11,15 @@
 load "themes.ceterm"
 
 # ---- 外观与启动 ----
-theme django
+theme grey-green
 # 逐项覆盖主题(theme-set "<名字>" <字段> <#RRGGBB>;名字不存在则新建):
 # theme-set "mine" bg "#101014"
 # theme-set "mine" fg "#D0D0D0"
 # theme-set "mine" ansi3 "#C4A000"     # ansi0..ansi15
 # theme-set "mine" tab_active_bg "#101014"
 # theme mine
-default-launch "zsh" "Agave Nerd Font Mono" 36
-vsync off
+default-launch "zsh" "Agave Nerd Font Mono" 32
+vsync on
 borderless off
 bgshader
 

@@ -7,7 +7,6 @@ package canvas
 import ct "../conpty"
 import fnt "../font"
 import mem "../memory"
-import prof "../profile"
 import "core:math"
 
 MAX_TREE_NODE_SLOTS :: 2000
@@ -799,10 +798,7 @@ LeafSplitOwner :: proc(n : int) -> mem.Handle {
 // 每帧对外编排:布局(树) → 尺寸应用 → 输出。
 // 趟序契约:布局先行(输出消费布局后的视口状态)。
 ConsoleUpdateTree :: proc(node_h : mem.Handle) {
-	t0 := prof.Now()
 	layoutWalk(node_h)
-	t1 := prof.Now()
-	prof.Mark("    tree:layoutWalk", t0, t1)
 
 	it : mem.Iter(MAX_CONSOLE_SLOTS, Console) = mem.All(&consoles)
 	for ch in mem.next(&it) {
@@ -811,10 +807,7 @@ ConsoleUpdateTree :: proc(node_h : mem.Handle) {
 			continue
 		}
 
-		ta := prof.Now()
 		UpdateConsole(ch)
-		tb := prof.Now()
-		prof.Mark("    console:UpdateConsole(vtparse)", ta, tb)
 
 		if console.rows == console.pty_rows && console.cols == console.pty_cols {
 			continue
@@ -825,12 +818,8 @@ ConsoleUpdateTree :: proc(node_h : mem.Handle) {
 
 		ct.Resize(console.conpty_handle, console.cols, console.rows)
 		console.pty_rows, console.pty_cols = console.rows, console.cols
-		tc := prof.Now()
-		prof.Mark("    conpty:Resize", tb, tc)
 
 	}
-	t2 := prof.Now()
-	prof.Mark("    tree:console 轮询合计", t1, t2)
 
 
 	// 遍历①(node 树):每个挂 console 的 leaf:就地读几何(节点真源),写 Console 布局。
