@@ -229,11 +229,13 @@ GetBlockLoop :: proc() -> bool {
 
 Update :: proc() {
 	BeginFrame()
+	UpdateIMEArea() // 每帧把光标位置喂给 IME(候选窗跟随光标)
 	DrawFrame() // 内含背景 pass(scene 层统一帧序)
 	EndFrame()
 }
 
 BeginFrame :: proc() {
+	FpsTick() // FPS 累加(与标签可不可见无关;开启时立刻有值)
 	w, h := GetWindowSize()
 	screen_w, screen_h = f32(w), f32(h)
 

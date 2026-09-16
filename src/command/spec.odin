@@ -258,6 +258,11 @@ COMMAND_SPECS := [?]CommandSpec {
 		help = "主循环阻塞:on = 没活就睡(静止 CPU≈0);off = 每帧无条件跑(退回旧行为,排查用)",
 	},
 	{
+		name = "fps", kind = .FpsTag, args = {.Toggle, .None, .None},
+		usage = "[on|off]",
+		help = "状态栏右下角 FPS 标签显示(默认关;省略参数 = 翻转)",
+	},
+	{
 		name = "bgshader", alias = "bg", kind = .BgShader, args = {.Str, .None, .None}, req = 0,
 		usage = `["<path>"]`,
 		help = "背景 shader:缺省 = 重载默认文件,带路径 = 编译该文件",

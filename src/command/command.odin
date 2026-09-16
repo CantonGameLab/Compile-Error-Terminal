@@ -85,6 +85,7 @@ CommandStringKind :: enum u8 {
 	Borderless,     // mode
 	VSync,          // mode
 	BlockLoop,      // mode:主循环阻塞(事件驱动)vs 忙等(无条件每帧)
+	FpsTag,         // mode:状态栏 FPS 标签显示开关(默认关)
 	BgShader,       // sval(空 = 重载默认文件)
 	ToggleCommandBar,
 	DefaultLaunch,  // sval(cmd)+ sval2(font)+ fval(size)
@@ -399,6 +400,20 @@ ExecuteCommand :: proc(cmd : ParsedCommand) -> (ret : string, ok : bool) {
 			on = !on
 		}
 		rnd.SetBlockLoop(on)
+		ok = true
+	case .FpsTag:
+		// 状态栏 FPS 标签是否显示(默认关;关掉时那块宽度让给命令栏)
+		on := cv.IsFpsTagVisible()
+		switch cmd.mode {
+		case .On:
+			on = true
+		case .Off:
+			on = false
+		case .Toggle:
+			on = !on
+		}
+		cv.SetFpsTagVisible(on)
+		ret = fmt.aprintf("%s", on ? "fps 标签: on" : "fps 标签: off")
 		ok = true
 	case .BgShader:
 		if cmd.sval == "" {

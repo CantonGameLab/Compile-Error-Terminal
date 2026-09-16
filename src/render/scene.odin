@@ -8,8 +8,73 @@ import cv "../canvas"
 import fnt "../font"
 import mem "../memory"
 import s3 "vendor:sdl3"
+import "core:c"
 import "core:fmt"
+import "core:math"
 import "core:time"
+
+// ---------------------------------------------------------------------------
+// IME 候选窗跟随光标
+// ---------------------------------------------------------------------------
+// 把光标格的**物理像素**矩形交给 SDL,输入法才知道候选窗该放哪。
+// 不设的话 SDL 用默认 (0,0) —— 候选窗就钉在窗口左上角。
+//
+// 两个必须踩准的点:
+//   ① 坐标系:SDL 要窗口物理像素。console.origin_x/origin_y 与 m.cell_* 都在
+//      内容区坐标空间,单位就是物理像素(与 GetWindowSize 的取法一致;
+//      不能用逻辑尺寸 —— 那受 DPI 缩放影响)。
+//   ② Console.cursor_row 是**物理行**,要减 visible_top 才是屏幕行
+//      —— 与下面光标绘制用的是同一个公式,不许另算一套。
+//
+// 每帧无条件调一次(而不是"光标变了才调"):成本只有一次 SDL 调用 + 几个算术,
+// 而光标移动的路径有十来条(Parse / resize 钳位 / 交替屏切换 / 滚动 / 换页…),
+// 逐个挂追踪必漏;每帧设置天然全覆盖。
+UpdateIMEArea :: proc() {
+	win := GetWindow()
+	if win == nil {
+		return
+	}
+	caret(win, cv.CurrentPage()) // 无页/无光标时内部会清掉区域
+}
+
+@(private = "file")
+caret :: proc(win : ^s3.Window, p : ^cv.Page) {
+	if p == nil {
+		_ = s3.SetTextInputArea(win, nil, 0)
+		return
+	}
+	console := cv.NodeConsole(p.focused)
+	if console == nil || !console.vt.cursor_visible {
+		_ = s3.SetTextInputArea(win, nil, 0)
+		return
+	}
+	tb := cv.GetTermBuffer(console.active_term_buffer_id)
+	if tb == nil {
+		_ = s3.SetTextInputArea(win, nil, 0)
+		return
+	}
+	m := fnt.GetMetrics(console.font_id)
+	if m.cell_width <= 0 || m.cell_height <= 0 {
+		_ = s3.SetTextInputArea(win, nil, 0)
+		return
+	}
+	visible_top, _ := cv.ConsoleViewportTop(p.focused)
+	screen_row := int(console.cursor_row) - visible_top
+	if screen_row < 0 || screen_row >= int(console.rows) {
+		_ = s3.SetTextInputArea(win, nil, 0) // 光标在视口外(review 模式翻页时)
+		return
+	}
+	x := console.origin_x + f32(console.cursor_col) * m.cell_width
+	y := console.origin_y + f32(screen_row) * m.cell_height
+	r := s3.Rect {
+		x = c.int(math.round(x)),
+		y = c.int(math.round(y)),
+		w = c.int(math.round(m.cell_width)),
+		h = c.int(math.round(m.cell_height)),
+	}
+	// cursor = 0:无组合串,插入点在矩形左端(矩形就是光标那一格)
+	_ = s3.SetTextInputArea(win, &r, 0)
+}
 
 // 每帧绘制入口:只读遍历窗口树(主题经 cv.GetTheme 只读消费)
 // 两趟遍历:先背景(第 1 趟)→ 背景 pass(FBO+shader)→ 字形/前景(第 2 趟)。
@@ -59,31 +124,43 @@ DrawFrame :: proc() {
 }
 
 // ---------------------------------------------------------------------------
-// FPS tag(条内最右角):渲染层统计自身帧率,每 0.5s 刷新一次显示值
+// FPS tag(条内最右角):统计"循环帧率",每 0.5s 刷新一次显示值
 // ---------------------------------------------------------------------------
+// 拆分:FpsTick 每帧累加(BeginFrame 调,与标签可不可见无关,一开启就有值),
+// drawFps 只读 fps_value 画。之前累加写在 drawFps 里,导致它统计的是
+// "渲染了几次"而不是循环帧率 —— 阻塞式主循环下静止时会显示 0~3 fps,是个假数字。
+FPS_WINDOW_S :: 0.5
+
 fps_start : time.Time
 fps_frames : int
 fps_value : f32
+
+FpsTick :: proc() {
+	fps_frames += 1
+	if fps_start == {} {
+		fps_start = time.now()
+		return
+	}
+	elapsed := time.duration_seconds(time.since(fps_start))
+	if elapsed >= FPS_WINDOW_S {
+		fps_value = f32(fps_frames) / f32(elapsed)
+		fps_frames = 0
+		fps_start = time.now()
+	}
+}
 
 // 行连体 shaping 复用缓冲(单线程渲染;resize 只会首次扩容,之后零分配)
 draw_shaped : [dynamic]u16
 draw_orig : [dynamic]u16
 
 drawFps :: proc() {
+	if !cv.IsFpsTagVisible() {
+		return // 默认关;命令 `fps on` 或配置行 fps on 开启
+	}
 	theme := cv.GetTheme()
 	uf := cv.GetUIFont() // UI 字体(定制项;页签/状态栏/FPS 共用)
-	fps_frames += 1
-	if fps_start == {} {
-		fps_start = time.now()
-	}
-	elapsed := time.duration_seconds(time.since(fps_start))
-	if elapsed >= 0.5 {
-		fps_value = f32(fps_frames) / f32(elapsed)
-		fps_frames = 0
-		fps_start = time.now()
-	}
 	if fps_value <= 0 {
-		return // 第一窗口期未满:不画
+		return // 第一窗口期未满:还没数出来
 	}
 	m := fnt.GetMetrics(uf)
 	if m.cell_width <= 0 || m.cell_height <= 0 {

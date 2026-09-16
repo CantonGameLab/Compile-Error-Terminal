@@ -362,7 +362,7 @@ pageCountAlive :: proc() -> int {
 CommandBarRect :: proc() -> Transform {
 	bar_top := f32(Window_Height)
 	return Transform {
-		position_x = f32(Window_Width) - FPS_TAG_W - TOOL_GAP - CMD_VIEW_W,
+		position_x = f32(Window_Width) - fpsTagReservedW() - TOOL_GAP - CMD_VIEW_W,
 		position_y = bar_top,
 		width = CMD_VIEW_W,
 		height = TAB_BAR_HEIGHT,
@@ -378,6 +378,28 @@ FpsTagRect :: proc() -> Transform {
 		width = FPS_TAG_W,
 		height = TAB_BAR_HEIGHT,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// userapi:FPS 标签显示开关(默认关)
+// ---------------------------------------------------------------------------
+// 唯一写者 = SetFpsTagVisible(命令 fps + 配置行)。渲染侧只读 IsFpsTagVisible。
+// 关掉时**让出宽度**:命令栏矩形右移吃掉那块区域(否则右侧会空一条既不可画
+// 也不可点的死区)。
+fps_tag_visible : bool = false
+
+SetFpsTagVisible :: proc(on : bool) -> bool {
+	fps_tag_visible = on
+	return true
+}
+
+IsFpsTagVisible :: proc() -> bool {
+	return fps_tag_visible
+}
+
+// FPS 标签为命令栏预留的宽度(隐藏时 = 0,把那块让给命令栏)
+fpsTagReservedW :: proc() -> f32 {
+	return fps_tag_visible ? FPS_TAG_W : 0
 }
 
 // 页签条命中:返回命中元素(index 0-based 页签 / -1 = "+" 按钮)
