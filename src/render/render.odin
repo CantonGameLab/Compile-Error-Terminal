@@ -85,7 +85,7 @@ Init :: proc() -> bool {
 	s3.GL_SetAttribute(.CONTEXT_PROFILE_MASK, c.int(s3.GLProfile{.CORE}))
 	s3.GL_SetAttribute(.DOUBLEBUFFER, 1)
 	s3.GL_SetAttribute(.MULTISAMPLEBUFFERS, 1)
-	s3.GL_SetAttribute(.MULTISAMPLESAMPLES, 8)
+	s3.GL_SetAttribute(.MULTISAMPLESAMPLES, 4)
 
 	gl_context = s3.GL_CreateContext(window)
 	if gl_context == nil {

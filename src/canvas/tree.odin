@@ -788,47 +788,48 @@ LeafSplitOwner :: proc(n : int) -> mem.Handle {
 
 // ---------------------------------------------------------------------------
 // 每帧更新(遍历按需分层:趟消费什么层的数据就遍历哪层,真源就地读,无跨层工作表):
-//   ① 布局 —— 消费 node 几何 → 遍历 node(树),写 Console 布局
-//   ② 尺寸应用 —— 只碰 console/conpty 数据 → 遍历 console
-//   ③ 输出 —— 只碰 console 数据 → 遍历 console
+//   ① 输出 —— 只碰 console 内容 → 遍历 console(拉取 + 解析)
+//   ② 布局 —— 消费 node 几何 → 遍历 node(树),写 Console 布局
+//   ③ 尺寸应用 —— 只碰 console/conpty 数据 → 遍历 console
 // 各趟写入数据仍保持单一;跨趟信息 = 数据自身(目标 vs 已应用,比较即知)。
 // ---------------------------------------------------------------------------
 
 
-// 每帧对外编排:布局(树) → 尺寸应用 → 输出。
-// 趟序契约:布局先行(输出消费布局后的视口状态)。
+// 每帧对外编排:输出 → 布局 → 尺寸应用。
+// 趟序契约(为什么输出必须**先于**布局):
+//   环形缓冲里的字节是子进程按**上一帧几何**排版的。若先布局,这些旧几何的字节
+//   会被用新 rows/cols 解释 —— 自动折行位置、EL/ECH 的覆盖范围、CUP 列 clamp
+//   全按新宽度算,整行错格(窗口 resize 时最明显)。顺序必须是:
+//   排空旧输出 → 改本地尺寸 → 通知 ConPTY。
 ConsoleUpdateTree :: proc(node_h : mem.Handle) {
+	it : mem.Iter(MAX_CONSOLE_SLOTS, Console) = mem.All(&consoles)
+
+	// 遍历①(console):输出 —— 应答排空 + 拉取解析(无会话 console 只做应答排空)
+	for ch in mem.next(&it) {
+		UpdateConsole(ch)
+	}
+
+	// 遍历②(node 树):布局 —— 每个挂 console 的 leaf:就地读几何(节点真源),写 Console 布局
 	layoutWalk(node_h)
 
-	it : mem.Iter(MAX_CONSOLE_SLOTS, Console) = mem.All(&consoles)
+	// 遍历③(console):尺寸应用 —— 目标尺寸(rows/cols)与 ConPTY 已应用(pty_*)
+	// 比较,变化才 Resize 并更新已应用记录。工具 console(conpty = 0)跳过。
+	it = mem.All(&consoles)
 	for ch in mem.next(&it) {
 		console := mem.Get(&consoles, ch)
 		if console == nil {
 			continue
 		}
-
-		// 应答排空 + 拉取解析(UpdateConsole 内部对无会话 console 只做应答排空)
-		UpdateConsole(ch)
-
-		// 无会话的工具 console:没有 ConPTY 可 resize,到此为止
 		if ct.GetConptyContext(console.conpty_handle) == nil {
 			continue
 		}
-
 		if console.rows == console.pty_rows && console.cols == console.pty_cols {
 			continue
 		}
-
-		// 遍历②(console):目标尺寸(rows/cols)与 ConPTY 已应用(pty_*)比较,
-		// 变化才 Resize 并更新已应用记录。工具 console(conpty = 0)跳过。
-
 		ct.Resize(console.conpty_handle, console.cols, console.rows)
 		console.pty_rows, console.pty_cols = console.rows, console.cols
-
 	}
 
-
-	// 遍历①(node 树):每个挂 console 的 leaf:就地读几何(节点真源),写 Console 布局。
 	layoutWalk :: proc(node_h : mem.Handle) {
 		node := GetWindowTreeNode(node_h)
 		if node == nil {

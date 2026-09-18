@@ -18,7 +18,7 @@ theme grey-green
 # theme-set "mine" ansi3 "#C4A000"     # ansi0..ansi15
 # theme-set "mine" tab_active_bg "#101014"
 # theme mine
-default-launch "zsh" "FiraCode Nerd Font Mono" 32
+default-launch "zsh" "Hack Nerd Font" 25
 vsync off
 borderless off
 bgshader

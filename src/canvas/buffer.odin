@@ -210,6 +210,10 @@ ConsoleWriteRune :: proc(console_h : mem.Handle, cp : rune, style : CellStyle) -
 	for len(line.cells) <= col + w - 1 {
 		append(&line.cells, Cell { style = { fg = DEFAULT_COLOR, bg = DEFAULT_COLOR } })
 	}
+	// 宽字对守卫(热路径局部):写入点两端的宽字对若被这次写入劈开,先清掉半个。
+	// 必须**清成空白格**而不是只降 wide 标志:渲染层按格号落字形、根本不看 wide,
+	// 悬空首格照样按宽字形画出来压到右邻居 —— 那正是"个别汉字重叠"的形态。
+	unpairWideAt(line, col, col + w - 1)
 	line.cells[col] = Cell { cp = cp, style = style, wide = w == 2 }
 	if w == 2 {
 		line.cells[col + 1] = Cell { style = style, wide = true } // 续列继承样式(背景)
@@ -328,6 +332,65 @@ lineEnsureCol :: proc(line : ^Line, col : int) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// 宽字对守卫
+// ---------------------------------------------------------------------------
+// 不变式(宽字对必须成对存在):
+//   I1 续列(cp == 0 && wide)⟺ 左边紧邻是它的宽体首格(cp != 0 && wide)
+//   I2 宽体首格            ⟺ 右边紧邻是它的续列
+// 违反的两种形态:孤儿续列(I1 左无首格)、悬空首格(I2 右无续列)。
+// 为什么必须**清成空白格**而不是只把 wide 降为 false:渲染层按"格号 × 格宽"落字形、
+// 完全不看 wide(见 render/scene.odin 字形趟),悬空首格照样按宽字形画出来,压到右
+// 邻居格的字形上 —— 这正是 nvim/vim 上"个别汉字重叠"的形态;孤儿续列则会让背景趟
+// 跳过该格底色、并让文本提取(TermBufferLineText)整列丢失。
+// 分工:热路径(每字符)只修写入点两端;冷路径(擦除/插入/删除)整行扫。
+
+// 写入/擦除 [lo, hi] 之前调用:把被这次操作劈开的宽字对清成空白格。
+// 只查两个边界 —— 区间内部整体被覆盖,留不下半个。
+unpairWideAt :: proc(line : ^Line, lo, hi : int) {
+	n := len(line.cells)
+	// 左边界:lo-1 是宽体首格、lo 是它的续列 → 首格失去续列
+	if lo > 0 && lo < n {
+		if l := &line.cells[lo - 1]; l.cp != 0 && l.wide &&
+		   line.cells[lo].cp == 0 && line.cells[lo].wide {
+			l.cp = 0
+			l.wide = false
+		}
+	}
+	// 右边界:hi+1 是续列、hi 是它的首格 → 续列失去首格
+	if hi >= 0 && hi + 1 < n {
+		if line.cells[hi].cp != 0 && line.cells[hi].wide &&
+		   line.cells[hi + 1].cp == 0 && line.cells[hi + 1].wide {
+			line.cells[hi + 1].wide = false
+		}
+	}
+}
+
+// 整行扫描,清掉全部不成对的半个宽字(冷路径:整行搬移类操作之后)。
+sanitizeWidePairs :: proc(line : ^Line, cols : int) {
+	n := min(cols, len(line.cells))
+	i := 0
+	for i < n {
+		c := &line.cells[i]
+		switch {
+		case c.cp != 0 && c.wide: // 宽体首格:必须有紧邻续列
+			if i + 1 < n && line.cells[i + 1].cp == 0 && line.cells[i + 1].wide {
+				i += 2 // 完整对,跳过
+				continue
+			}
+			c.cp = 0
+			c.wide = false
+		case c.cp == 0 && c.wide: // 续列:左边必须是宽体首格
+			if i > 0 && line.cells[i - 1].cp != 0 && line.cells[i - 1].wide {
+				i += 1
+				continue
+			}
+			c.wide = false
+		}
+		i += 1
+	}
+}
+
 // mode:0 到行尾 / 1 到行首 / 2 整行
 vtEraseInLine :: proc(console_h : mem.Handle, mode : int) {
 	console := GetConsole(console_h)
@@ -344,9 +407,10 @@ vtEraseInLine :: proc(console_h : mem.Handle, mode : int) {
 	}
 	line := &tb.lines[row]
 	erase := eraseCell(console)
+	cols := int(console.cols)
 	switch mode {
 	case 0:
-		for col in int(console.cursor_col) ..< int(console.cols) {
+		for col in int(console.cursor_col) ..< cols {
 			lineEnsureCol(line, col)
 			line.cells[col] = erase
 		}
@@ -356,11 +420,12 @@ vtEraseInLine :: proc(console_h : mem.Handle, mode : int) {
 			line.cells[col] = erase
 		}
 	case 2:
-		for col in 0 ..< int(console.cols) {
+		for col in 0 ..< cols {
 			lineEnsureCol(line, col)
 			line.cells[col] = erase
 		}
 	}
+	sanitizeWidePairs(line, cols) // 擦除端点可能落在宽字对中间
 }
 
 // mode:0 光标到屏尾 / 1 屏头到光标 / 2 可视区 / 3 全部 + 历史
@@ -407,10 +472,12 @@ vtClearLineAll :: proc(console_h : mem.Handle, row : int) {
 		return
 	}
 	erase := eraseCell(console)
-	for col in 0 ..< int(console.cols) {
+	cols := int(console.cols)
+	for col in 0 ..< cols {
 		lineEnsureCol(&tb.lines[row], col)
 		tb.lines[row].cells[col] = erase
 	}
+	sanitizeWidePairs(&tb.lines[row], cols)
 }
 
 // ECH:从光标起擦除 n 个字符(不清空行)
@@ -429,7 +496,8 @@ vtEraseChars :: proc(console_h : mem.Handle, n : int) {
 	}
 	line := &tb.lines[row]
 	start := int(console.cursor_col)
-	end := min(start + n, int(console.cols))
+	cols := int(console.cols)
+	end := min(start + n, cols)
 	erase := eraseCell(console)
 	when VT_DEBUG {
 		fmt.eprintfln("VTDBG ECH n=%d start=%d style.bg=%08X", n, start, console.vt.style.bg)
@@ -438,9 +506,17 @@ vtEraseChars :: proc(console_h : mem.Handle, n : int) {
 		lineEnsureCol(line, i)
 		line.cells[i] = erase
 	}
+	sanitizeWidePairs(line, cols) // 擦除端点可能落在宽字对中间
 }
 
-// DCH:删除光标起 n 字符,右侧左移补空白
+// DCH:删除光标起 n 字符,右侧左移补空白。
+// 两个约束:
+//   ① 删除范围按**行宽 cols** 计,不按该行已分配的 cells 长度 —— cells 只因"写过的
+//      最大列"增长,而光标可被 CUP 移到任意合法列,于是 len(cells) - col 为负;
+//   ② 左移只在 **[0, cols) 窗口内**做,不能用 remove_range 搬整个数组 —— 数组尾
+//      可能留着缩窄前的旧列,整体左移会把它们挪进可见区。
+// (修复前 ① 触发内建检查 panic:ESC[1;40H 后 ESC[1P → "Invalid slice indices
+//  39:3 is out of range 0..<3",进程直接退出。)
 vtDeleteChars :: proc(console_h : mem.Handle, n : int) {
 	console := GetConsole(console_h)
 	if console == nil {
@@ -455,13 +531,21 @@ vtDeleteChars :: proc(console_h : mem.Handle, n : int) {
 		return
 	}
 	line := &tb.lines[row]
-	col := int(console.cursor_col)
-	nn := min(n, len(line.cells) - col)
-	remove_range(&line.cells, col, col + nn)
-	erase := eraseCell(console)
-	for i in 0 ..< nn {
-		append(&line.cells, erase)
+	cols := max(1, int(console.cols))
+	col := min(int(console.cursor_col), cols - 1)
+	nn := min(n, cols - col)
+	if nn <= 0 {
+		return
 	}
+	lineEnsureCol(line, cols - 1) // 窗口内定宽:下面按格读写的下标都有实体
+	for i in col ..< cols - nn {
+		line.cells[i] = line.cells[i + nn]
+	}
+	erase := eraseCell(console)
+	for i in cols - nn ..< cols {
+		line.cells[i] = erase
+	}
+	sanitizeWidePairs(line, cols)    // 左移会把宽字对从 col / cols-nn 处劈开
 	selectionColDelete(row, col, nn) // 选区通报:行内删除(列平移/内容消失)
 }
 
@@ -480,16 +564,21 @@ vtInsertChars :: proc(console_h : mem.Handle, n : int) {
 		append(&tb.lines, Line{})
 	}
 	line := &tb.lines[row]
-	for len(line.cells) < int(console.cols) {
+	cols := max(1, int(console.cols))
+	for len(line.cells) < cols {
 		append(&line.cells, Cell { style = { fg = DEFAULT_COLOR, bg = DEFAULT_COLOR } })
 	}
-	col := int(console.cursor_col)
-	nn := min(n, int(console.cols) - col)
-	copy(line.cells[col + nn:], line.cells[col:int(console.cols) - nn])
+	col := min(int(console.cursor_col), cols - 1)
+	nn := min(n, cols - col)
+	if nn <= 0 {
+		return
+	}
+	copy(line.cells[col + nn:], line.cells[col:cols - nn])
 	erase := eraseCell(console)
 	for i in col ..< col + nn {
 		line.cells[i] = erase
 	}
+	sanitizeWidePairs(line, cols)    // 右移会把宽字对从 col / cols-nn 处劈开
 	selectionColInsert(row, col, nn) // 选区通报:行内插入(列平移)
 }
 

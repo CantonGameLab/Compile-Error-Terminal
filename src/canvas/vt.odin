@@ -789,10 +789,15 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 		vtEraseInDisplay(console_h, p0)
 	case 'K': // EL
 		vtEraseInLine(console_h, p0)
-	case 'm': // SGR;xterm 私用 '>' 是 modifyOtherKeys
+	case 'm': // SGR;私用标记各有归属:'>' = modifyOtherKeys,'?' 等**不是 SGR**
+		// private == '?' 必须拒绝:msys2 的 vim(xterm-256color)会发 `CSI ? 4 m`
+		// (该 terminfo 的 sgr/setaf 是参数化串 `%?%p2%t;4%;`,展开后落到这个 final)。
+		// 当成 SGR 4 处理会把 vt.style.underline 置位,而 style 是**持久状态** ——
+		// 此后写进去的每一格都带下划线,表现为"开 vim 后半屏下划线、退出后仍在",
+		// 实测一份 2194 字节的真实 vim 启动流:431 格 / 6 行被标上下划线。
 		if private == '>' {
 			vt.modify_other_keys = u8(p1) // CSI > 4;Nm,N=0/1/2
-		} else {
+		} else if private == 0 {
 			vtSgr(console_h)
 		}
 	case 'h', 'l': // DEC 模式
@@ -831,10 +836,12 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 			if p0 == 6 {
 				vtReplyCursorDec(console_h)
 			}
-		} else if p0 == 6 {
-			vtReplyCursor(console_h)
-		} else if p0 == 5 {
-			vtReplyOk(console_h) // 设备状态正常
+		} else if private == 0 { // 同 'm':非 '?' 的私有标记不参与标准语义
+			if p0 == 6 {
+				vtReplyCursor(console_h)
+			} else if p0 == 5 {
+				vtReplyOk(console_h) // 设备状态正常
+			}
 		}
 	case 't': // XTWINOPS:18 = 窗口尺寸查询
 		if p0 == 18 {

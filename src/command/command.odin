@@ -615,7 +615,7 @@ ParseCommandStringEx :: proc(s : string, errbuf : []u8) -> (pc : ParsedCommand, 
 		case .None:
 			return {}, usageText(errbuf, spec, "参数过多"), false
 		case .Str:
-			// font 单数字参数 = 只改字号(等价 fontsize;DESIGN 兼容写法)
+			// font 单数字参数 = 只改字号(等价 fontsize;兼容写法,见 docs/SCRIPT.md §4.3)
 			size_only := false
 			if spec.kind == .Font && argn == 1 {
 				if v, vok := parseF32(tok); vok {
