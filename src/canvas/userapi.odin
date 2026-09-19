@@ -858,3 +858,23 @@ resolveWindow :: proc(id : mem.Handle) -> mem.Handle {
 	return p.focused
 }
 
+
+// 录制(命令 rec):把**焦点窗格(或 @id 指定窗格)**的 ConPTY 原始字节流落盘,用于复现
+// 只在别的机器上出现的问题。path 非空 = 开始;空串 = 停止。
+// 回放:playground/widecap/ 的 play 模式(同一解析器,同一画面)。
+ConsoleRecord :: proc(path : string, id : mem.Handle = {}) -> bool {
+	if len(path) == 0 {
+		active := RecordActive()
+		RecordStop()
+		return active
+	}
+	node_h := resolveWindow(id)
+	if node_h.id == 0 {
+		return false
+	}
+	console_h := NodeConsoleId(node_h)
+	if console_h.id == 0 {
+		return false
+	}
+	return RecordStart(console_h, path)
+}

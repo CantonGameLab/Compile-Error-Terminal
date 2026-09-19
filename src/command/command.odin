@@ -91,6 +91,7 @@ CommandStringKind :: enum u8 {
 	FpsTag,         // mode:状态栏 FPS 标签显示开关(默认关)
 	Conpty,         // mode:新会话用外部 conpty.dll(OpenConsole)还是系统 kernel32
 	Hinting,        // sval(空 = 显示当前):字形光栅化模式(stb/off/light/normal)
+	Record,         // sval(空 = 停止):录制焦点窗格的 ConPTY 字节流到该路径
 	BgShader,       // sval(空 = 重载默认文件)
 	ToggleCommandBar,
 	DefaultLaunch,  // sval(cmd)+ sval2(font)+ fval(size)
@@ -448,7 +449,28 @@ ExecuteCommand :: proc(cmd : ParsedCommand) -> (ret : string, ok : bool) {
 			ret = fmt.aprintf("%s", "conpty: 没有可用的外部 conpty.dll —— 需要在 exe 同目录放 conpty.dll + OpenConsole.exe")
 			ok = false
 		}
-	case .Hinting:
+	case .Record:
+		// 录制原始字节流(命令 rec):用于复现只在别人机器上出现的问题。
+		// 带路径 = 开始(缺省 dump.bin);不带 = 停止。
+		if cmd.sval == "" {
+			path := cv.RecordPath()
+			if len(path) == 0 {
+				ret = fmt.aprintf("%s", "rec: 当前没有在录制")
+				ok = false
+				return
+			}
+			cv.ConsoleRecord("", cmd.target)
+			ret = fmt.aprintf("rec: 已停止(%s)", path)
+			ok = true
+			return
+		}
+		if cv.ConsoleRecord(cmd.sval, cmd.target) {
+			ret = fmt.aprintf("rec: 正在录制 → %s(复现完再执行一次 rec 停止)", cmd.sval)
+			ok = true
+		} else {
+			ret = fmt.aprintf("rec: 打不开 %s(或该窗格没有会话)", cmd.sval)
+			ok = false
+		}	case .Hinting:
 		// 字形光栅化模式(stb = 无 hinting;off/light/normal = FreeType 提示强度)。
 		// 切完必须让字形缓存重新光栅化 —— 位图内容与尺寸都会变。
 		if cmd.sval == "" {

@@ -835,6 +835,7 @@ ConsoleUpdateTree :: proc(node_h : mem.Handle) {
 		if ct.Resize(console.conpty_handle, console.cols, console.rows) {
 			console.pty_rows, console.pty_cols = console.rows, console.cols
 			console.resize_retry = 0
+			RecordSize(ch, console.cols, console.rows) // rec:尺寸变化写进 dump.meta
 			continue
 		}
 		// 失败:保持 pty_* 落后 → 下帧重试。只报第一次(否则每帧刷屏)

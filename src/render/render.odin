@@ -64,6 +64,18 @@ vao, vbo : u32
 // 生命周期
 // ---------------------------------------------------------------------------
 
+// 窗口图标:一张 256×256 PNG(SDL3 自带 PNG 解码,资源根见 paths 模块)。
+// 文件缺失不算致命 —— 开发构建或裁剪过的资源目录仍要能起窗口,所以静默跳过。
+setWindowIcon :: proc() {
+	path := strings.clone_to_cstring(paths.Resource("icon/ceterm.png"), context.temp_allocator)
+	icon := s3.LoadSurface(path)
+	if icon == nil {
+		return
+	}
+	defer s3.DestroySurface(icon)
+	s3.SetWindowIcon(window, icon)
+}
+
 Init :: proc() -> bool {
 	if !s3.Init({.VIDEO}) {
 		fmt.eprintln("SDL3 init failed. Guess what? I won't serve you anymore! GO using other terminal emulator such as the WINDOW TERMINAL. This is who specially prepared for users like YOU.", s3.GetError())
@@ -79,6 +91,7 @@ Init :: proc() -> bool {
 		fmt.eprintln("FAILED FAILED and FAILED. You can't just create A window! Congratulations!", s3.GetError())
 		return false
 	}
+	setWindowIcon()
 
 	s3.GL_SetAttribute(.CONTEXT_MAJOR_VERSION, 4)
 	s3.GL_SetAttribute(.CONTEXT_MINOR_VERSION, 4)

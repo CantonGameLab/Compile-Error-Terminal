@@ -79,6 +79,7 @@ vtFeed :: proc(console_h : mem.Handle, data : []byte) {
 	if console == nil {
 		return
 	}
+	RecordFeed(console_h, data) // 命令 rec:录制进入解析器的原始字节(未录制时空转)
 	Parse(console_h, data)
 }
 
@@ -550,7 +551,8 @@ vtEscDispatch :: proc(console_h : mem.Handle, final : u8) {
 		console.cursor_row, console.cursor_col = console.vt.saved_cursor_row, console.vt.saved_cursor_col
 	case 'D': // IND
 		vtLf(console_h)
-	case 'E': // NEL
+	case 'E': // NEL(显式"下一行行首":必须清折行等待,否则下一个字符会再折一次、白跳一行)
+		console.vt.wrap_pending = false
 		console.cursor_col = 0
 		vtLf(console_h)
 	case 'M': // RI
@@ -790,6 +792,7 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 		}
 		vt.scroll_top, vt.scroll_bottom = u16(min(top, bottom)), u16(max(top, bottom))
 		if vt.origin_mode {
+			vt.wrap_pending = false
 			console.cursor_row = u16(base + int(vt.scroll_top))
 			console.cursor_col = 0
 		}

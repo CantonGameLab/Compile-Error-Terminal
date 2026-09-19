@@ -3,3 +3,9 @@
 *.md text eol=lf
 *.txt text eol=lf
 .gitattributes text eol=lf
+
+# 构建脚本:必须 LF。*.sh 被转成 CRLF 后 shebang 会变成 "#!/bin/sh\r",bash 直接拒跑;
+# *.ps1 / *.py 本身容忍 CRLF,跟上面源码类一起钉住,免得出现"同一批脚本两种行尾"。
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.py text eol=lf

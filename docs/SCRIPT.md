@@ -230,6 +230,7 @@ load "C:/my/themes.ceterm"            # 绝对路径原样
 | `fps` | | `[on\|off]` | 状态栏右下角 FPS 标签(**默认关**;省略 = 翻转) |
 | `conpty` | | `[on\|off]` | **新会话**的 ConPTY 实现:on = 外部 `conpty.dll`(新版 OpenConsole);off = 系统 kernel32;省略 = 翻转。**只影响新会话**(已有会话的 HPCON 与实现绑定) |
 | `hinting` | | `[stb\|off\|light\|normal]` | 字形光栅化模式:`stb` = stb_truetype(无 hinting,旧行为);`off`/`light`/`normal` = FreeType 提示强度(`normal` 为默认)。省略 = 查询当前。**切换后字形缓存重新光栅化**;FreeType 缺失时自动退回 stb |
+| `rec` | `record` | `["<path>"] [@id]` | 录制该窗格的 **ConPTY 原始字节流**到 `<path>`(缺省 `dump.bin`,同时写 `.meta` 尺寸记录);省略参数 = 停止。用于复现只在别的机器上出现的问题,回放见 `playground/widecap/ -- play <dump>` |
 | `bgshader` | `bg` | `["<path>"]` | 背景 shader:缺省 = 重载默认文件,带路径 = 编译该文件 |
 | `toggle-commandbar` | `togglebar` | | 命令栏开关 |
 

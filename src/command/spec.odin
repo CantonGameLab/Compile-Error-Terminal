@@ -273,6 +273,11 @@ COMMAND_SPECS := [?]CommandSpec {
 		help = "新会话的 ConPTY 实现:on = 外部 conpty.dll(新版 OpenConsole);off = 系统 kernel32;省略 = 翻转。只影响新会话",
 	},
 	{
+		name = "rec", alias = "record", kind = .Record, args = {.Str, .None, .None}, req = 0, target = true,
+		usage = `["<path>"] [@id]`,
+		help = "录制该窗格(缺省焦点)的 ConPTY 原始字节流到 <path>(缺省 dump.bin,同时写 dump.bin.meta);省略参数 = 停止。回放见 playground/widecap/",
+	},
+	{
 		name = "hinting", kind = .Hinting, args = {.Str, .None, .None}, req = 0,
 		usage = "[stb|off|light|normal]",
 		help = "字形光栅化:stb = 无 hinting(旧行为);off/light/normal = FreeType 提示强度;省略 = 显示当前。切换后字形缓存重新光栅化",
