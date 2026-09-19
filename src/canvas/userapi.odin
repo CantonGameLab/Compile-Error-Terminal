@@ -35,21 +35,26 @@ import "core:strings"
 DefaultLaunch :: struct {
 	cmd : string,
 	font : string,
+	cn_font : string, // 中文字体("" = 用系统候选);与 font 一起构成默认字体集
 	size : f32,
 }
 
 default_launch : DefaultLaunch
 
-// userapi:设置默认启动配置(cmd/font 传空串 = 对应项不自动应用)
-SetDefaultLaunch :: proc(cmd, font : string, size : f32) {
+// userapi:设置默认启动配置(cmd/font/cn_font 传空串 = 对应项不自动应用)
+SetDefaultLaunch :: proc(cmd, font, cn_font : string, size : f32) {
 	if default_launch.cmd != "" {
 		delete(default_launch.cmd)
 	}
 	if default_launch.font != "" {
 		delete(default_launch.font)
 	}
+	if default_launch.cn_font != "" {
+		delete(default_launch.cn_font)
+	}
 	default_launch.cmd = strings.clone(cmd)
 	default_launch.font = strings.clone(font)
+	default_launch.cn_font = strings.clone(cn_font)
 	default_launch.size = size
 }
 
@@ -66,7 +71,7 @@ applyDefaultLaunch :: proc(node_h : mem.Handle) {
 	}
 	d := &default_launch
 	if d.font != "" {
-		SetConsoleFont(d.font, d.size, node_h)
+		SetConsoleFontSet(d.font, d.cn_font, d.size, node_h)
 	}
 	if d.cmd != "" {
 		if !LaunchConsole(d.cmd, node_h) {
@@ -319,19 +324,18 @@ GetSplitFactor :: proc(id : mem.Handle = {}) -> (f32, bool) {
 // 引用管理:LoadFont 调用方获得一个引用;窗口持有 font_id 期间引用有效,
 // 换字体/销毁窗口时 ReleaseFont(旧引用归零即需可复用)。字体表全局共享。
 
-// 装载变体(失败 = 空引用;成功 = +1 引用;静默:变体缺失是常态)
-// 变体名 = font 包的族名/文件双形式推导(见 LoadFontVariant)
-loadVariant :: proc(name : string, size : f32, sfx_family, sfx_file : string) -> mem.Handle {
-	return fnt.LoadFontVariant(name, size, sfx_family, sfx_file)
-}
+// ---------------------------------------------------------------------------
+// 字体集(引用管理:FontSetCreate 取得整批句柄引用;console 持有期间有效,
+// 换字体/销毁窗格走 releaseConsoleFontSet。字体表全局共享,同 (path,size,em) 复用)
+// ---------------------------------------------------------------------------
 
-// 设定 id(或焦点)窗格的字体样式(加载字体文件;LaunchConsole 前必须设置)。
-// 空窗格自动创建 console(字体集住在 console 里)。变体:同族
-// "X Bold/Italic/Bold Italic" 兄弟文件,有 = 渲染用真 face,无 = 渲染合成(双描/斜切)
-// 兜底;font_input 留存原始名(字号重载/继承用,字符串所有权归 console)。
-SetConsoleFont :: proc(path : string, size : f32, id : mem.Handle = {}) -> bool {
-	if len(path) == 0 {
-		return false // 空名称不是合法字体输入
+// **主入口**:给 id(或焦点)窗格设一套字体集(主字体 + 中文字体 + 字号)。
+// cn_name 空 = 用 font 模块的中文候选表取第一个能加载的(即"没显式配中文"的旧行为)。
+// 空窗格自动创建 console(字体集住在 console 里)。
+// 两个字体在 FontSetCreate 里按**同一 em** 加载 —— 汉字与拉丁等大、字符格由主字体定。
+SetConsoleFontSet :: proc(main_name, cn_name : string, size : f32, id : mem.Handle = {}) -> bool {
+	if len(main_name) == 0 || size <= 0 {
+		return false // 空名称/非法字号不是合法输入
 	}
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
@@ -343,40 +347,40 @@ SetConsoleFont :: proc(path : string, size : f32, id : mem.Handle = {}) -> bool 
 		fmt.eprintln("SCF: the node's real, but there's no console in it. You knocked on a door that was painted on.")
 		return false
 	}
-	new_font, ok := fnt.LoadFont(path, size)
+	new_set, ok := FontSetCreate(main_name, cn_name, size)
 	if !ok {
-		fmt.eprintln("SCF: LoadFont choked on it. kitty would have quietly picked six fallbacks and shaped around your mistake. Wrong path, wrong size, or a file that lies about being a font:", path, size)
+		fmt.eprintln("SCF: FontSetCreate choked on it. kitty would have quietly picked six fallbacks and shaped around your mistake. Wrong path, wrong size, or a file that lies about being a font:", main_name, size)
 		return false
 	}
-	// 入参可能是本 console 旧 font_input(字号重载 = 自引用调用):先独立持有一份,
-	// 否则下方 releaseConsoleFontSet 释放旧名后再 clone 会读到悬垂内存
-	name := strings.clone(path)
-	// 变体装载(失败 = 空引用不阻塞主字体;静默,变体缺失是常态)
-	new_bold := loadVariant(path, size, "Bold", "Bold")
-	new_italic := loadVariant(path, size, "Italic", "Italic")
-	new_bi := loadVariant(path, size, "Bold Italic", "BoldItalic")
-	// 释放旧字体集引用 + 旧输入名;赋新(LoadFont 命中同字体时先 +1 后 -1,净零)
+	// 先拿到新集再放旧的:同字体重载时 LoadFont 先 +1 后 -1,净零,不闪空窗
 	releaseConsoleFontSet(console)
-	console.font_id = new_font
-	console.font_bold = new_bold
-	console.font_italic = new_italic
-	console.font_bold_italic = new_bi
-	console.font_input = name
+	console.font_set = new_set
 	return true
 }
 
-// 设置 id(或焦点)窗格的字体大小(重载完整字体集:同原始名新 size,
-// 变体同步重载;失败保留旧字体)
+// 兼容入口:只给主字体(中文字体走候选表)。命令 `font` / 配置里的历史写法走这里。
+SetConsoleFont :: proc(path : string, size : f32, id : mem.Handle = {}) -> bool {
+	return SetConsoleFontSet(path, "", size, id)
+}
+
+// 设置 id(或焦点)窗格的字体大小(整集重载:从**句柄自身**取路径,两个字体一起重建,
+// 保证 em 对齐与格宽同步;失败保留旧字体集)
 SetConsoleFontSize :: proc(size : f32, id : mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return false
 	}
 	console := NodeConsole(node_h)
-	if console == nil || console.font_id.id == 0 || console.font_input == "" {
+	if console == nil || console.font_set.main_font.id == 0 {
 		return false // 未设字体
 	}
-	return SetConsoleFont(console.font_input, size, node_h)
+	new_set, ok := FontSetWithSize(&console.font_set, size)
+	if !ok {
+		return false
+	}
+	releaseConsoleFontSet(console)
+	console.font_set = new_set
+	return true
 }
 
 // 增量改字号(绑定 FontSizeUp/Down 的目标;步长由调用方给,命令层用 ±2)
@@ -386,10 +390,14 @@ AdjustConsoleFontSize :: proc(delta : f32, id : mem.Handle = {}) -> bool {
 		return false
 	}
 	console := NodeConsole(node_h)
-	if console == nil || console.font_id.id == 0 {
+	if console == nil {
 		return false
 	}
-	return SetConsoleFontSize(fnt.GetFont(console.font_id).size + delta, node_h)
+	f := fnt.GetFont(console.font_set.main_font)
+	if f == nil {
+		return false
+	}
+	return SetConsoleFontSize(f.size + delta, node_h)
 }
 
 // 清空 id(或焦点)窗格的会话:销毁 ConPTY + 缓冲,console 与字体保留,
@@ -493,11 +501,23 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 		CurrentPage().focused = new_h
 		node_h, console_h, console = new_h, NodeConsoleId(new_h), new_console
 	}
-	if console == nil || fnt.GetFont(console.font_id) == nil {
+	if console == nil || fnt.GetFont(console.font_set.main_font) == nil {
 		fmt.eprintln("LC: no font -> no cell size -> no console. Alacritty would have silently used a fallback font and let you be wrong. SetConsoleFont first, genius.")
 		return false // 未设置字体,先 SetConsoleFont
 	}
-	conpty_h, ok := ct.CreateConptyContext({80, 24}, cmd, source_cwd)
+	// 会话尺寸 = **当前几何算出来的真实网格**,不是写死的 80x24(旧行为)。
+	// 用错尺寸建 ConPTY,子进程一启动就按错尺寸排版,之后只能靠一次 resize 去纠正;
+	// 那次 resize 失败(Win10 的 ResizePseudoConsole 会概率性失败)或子进程没跟上时,
+	// 尺寸就永久停在 80x24 —— 这正是"终端一打开 TUI 的 size 就不对"的来源。
+	// 几何/字体不可用时退回 24x80(后续帧的布局+尺寸应用趟会纠正)。
+	rows, cols := u16(24), u16(80)
+	if r, c, gok := ConsoleGridForRect(console, WindowEffectiveRect(node_h)); gok {
+		rows, cols = r, c
+	} else {
+		fmt.eprintln("LC: 拿不到几何/字体度量,回退 80x24 建会话(尺寸要等 resize 纠正):", cmd)
+	}
+
+	conpty_h, ok := ct.CreateConptyContext({i16(cols), i16(rows)}, cmd, source_cwd)
 	if !ok {
 		fmt.eprintln("LC: CreateConptyContext died before foreplay. Your command is wrong, cursed, or both:", cmd)
 		return false
@@ -509,14 +529,14 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 	}
 	// console 已存在(字体集在内):就地绑会话;不存在则新建
 	if console_h.id != 0 {
-		if !consoleStartSession(console_h, conpty_h, 24, 80) {
+		if !consoleStartSession(console_h, conpty_h, rows, cols) {
 			fmt.eprintln("LC: the pty was already in and the session still wouldn't start. Performance issues. I'm pulling out — you get nothing:", cmd)
 			ct.StopReadThread(conpty_h)
 			ct.DestroyConpty(conpty_h)
 			return false
 		}
 	} else {
-		new_h, cok := CreateConsole(24, 80, conpty_h)
+		new_h, cok := CreateConsole(rows, cols, conpty_h)
 		if !cok {
 			fmt.eprintln("LC: couldn't create the console itself. kitty does consoles, images and a scripting language, and it's one guy. You have a pty, a font, and nowhere to put them:", cmd)
 			ct.StopReadThread(conpty_h)
@@ -772,7 +792,7 @@ ConsoleInfo :: struct {
 	node : mem.Handle,
 	has_console : bool,
 	has_session : bool, // conpty_handle != 0
-	font_name : string, // 原始字体输入名(font_input)
+	font_name : string, // 主字体解析路径(借自字体表,字体表存活期有效)
 	font_size : f32,
 	bold_face : bool, // 有真 Bold 变体(否则渲染合成)
 	italic_face : bool,
@@ -801,11 +821,11 @@ GetConsoleInfo :: proc(id : mem.Handle = {}) -> (info : ConsoleInfo, ok : bool) 
 	}
 	info.has_console = true
 	info.has_session = console.conpty_handle.id != 0
-	info.font_name = console.font_input
-	info.bold_face = console.font_bold.id != 0
-	info.italic_face = console.font_italic.id != 0
-	info.bi_face = console.font_bold_italic.id != 0
-	if f := fnt.GetFont(console.font_id); f != nil {
+	info.font_name = FontSetMainPath(console.font_set)
+	info.bold_face = console.font_set.bold_font.id != 0
+	info.italic_face = console.font_set.italic_font.id != 0
+	info.bi_face = console.font_set.bold_italic_font.id != 0
+	if f := fnt.GetFont(console.font_set.main_font); f != nil {
 		info.font_size = f.size
 	}
 	info.rows, info.cols = console.rows, console.cols

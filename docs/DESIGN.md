@@ -294,7 +294,7 @@ current_page : mem.Handle     // 当前页;0 = 无页(程序空态)
 **入口**:① 悬浮命令栏(F2 呼出)输入指令回车执行;② 配置文件 `config.ceterm`(逐行 = 一条指令,见 6.3);③ 子进程 OSC 999 信道(见 6.1)。
 三处共用**同一套语法、同一个解析器与同一个解释器**;指令无前缀,命令名与键名大小写不敏感。
 
-> **完整命令表(51 条)见 `SCRIPT.md` §4** —— 那份表由 `src/command/spec.odin` 的 `COMMAND_SPECS`
+> **完整命令表(53 条)见 `SCRIPT.md` §4** —— 那份表由 `src/command/spec.odin` 的 `COMMAND_SPECS`
 > 逐条导出,是命令全集的**唯一文档真相源**;本文不再复述,避免双份维护。
 
 设计上不可省的几条硬规则(细节与反例见 `SCRIPT.md` §2):
@@ -411,6 +411,8 @@ CreateTermBuffer(...) / DestroyTermBuffer(h) / GetTermBuffer(h)
 
 **选区数据模型(绝对锚定)**:`Selection` 存 buffer 物理 `(line, col)` 区间 —— **内容在,选区在**:窗口/页/焦点变化免疫;内容结构变化(插/删行、插/删字符)由 buffer 写路径通报平移;锚点内容被删 → 清。`SelectionValidate()` 每帧在渲染前定稿(自愈)。
 
+**宽字符列算术(不变式)**:光标移动一律**纯算术**,禁止按缓冲内容(宽字续列)修正 —— BS = 列-1,CUB n = 列-n,光标**允许**停在续列上。理由:应用(zsh/zle、vim)按自己的列模型发**相对**位移,终端若"帮忙"多挪一列,两边就此错开,后续擦除/重写落错格,劈开宽字对 —— 症状是"纯输入正常、一编辑整行就乱"。`vt.odin` 中不得出现读 `cell.cp/wide` 来调整光标的代码(唯一的宽字处理在写入路径:写窄字覆盖半个宽字对时把另一半清成空白)。
+
 ### 5.3 工具 iterm【规划,接口未实现】
 
 > 以下接口在 `src/` 中**不存在**;这是落地时的接口形态草案。
@@ -523,7 +525,14 @@ ResetBackgroundShader() -> bool              // 重读默认文件(热重载)
 - [x] ANSI 子进程指令通道:vtparse 识别 `OSC 999 ; <cmd> ST`,转 `executeString`(见 `OSC999.md`)
 - [x] 指令回复通道:回执经 `OSC 999 ; > ok|err ; <body> ST` 写回子进程 stdin(见 `OSC999.md` §3)
 - [x] 阻塞主循环(4 个唤醒端点:ConPTY 环有数据 / SDL 事件 / 命令信道 / 动画期限)
-- [x] 脏标记:静止帧整帧跳过(swap 是帧内最大开销;见 `DIRTY_TRACKING_REVIEW.md`)
+- [x] 静止帧不渲染:靠**阻塞主循环入睡**实现(不是脏标记 —— `render` 里没有跳帧逻辑,每帧仍 `gl.Clear` + `SwapWindow`;见 `DIRTY_TRACKING_REVIEW.md`)
+- [x] 宽字对守卫:任何部分写/擦/插/删后修边界,不成对的半个宽字清成空白(见 `buffer.odin` 的 `unpairWideAt` / `sanitizeWidePairs`)
+- [x] resize 趟序:输出排空 → 改本地尺寸 → 通知 ConPTY(`ConsoleUpdateTree`;**ConPTY resize 语义/reflow 策略未定**)
+- [x] 会话初始尺寸 = 真实几何(`ConsoleGridForRect`;不再用写死的 80x24 —— 那会迫使每个会话都靠一次 resize 去纠正)
+- [x] resize 失败不记"已应用",下帧重试(`ResizePseudoConsole` 会失败;一次失败 = 永久卡在旧尺寸)
+- [x] ConPTY 实现可切换:**外部 `conpty.dll`(Windows Terminal 的 OpenConsole 实现)注入** + 命令 `conpty on|off`(只影响新会话;见 `resource/conpty/README.md`)
+- [x] XTWINOPS 查询应答补齐:11(窗口状态)/ 14(像素尺寸)/ 18(文本区)/ 19(屏幕字符)—— 新版 conpty 启动即查询
+- [ ] 试新版 conpty 的 `PSEUDOCONSOLE_GLYPH_WIDTH_{GRAPHEMES|WCSWIDTH|CONSOLE}` 旗标(宿主可选的 CJK 宽度算法;或可从源头治宽字宽度分歧)
 - [ ] iterm 工具运行时(InternalApp 绘制 + 输入拦截)落地后定义工具输入接口(见 4.2 / 5.3)
 - [ ] rich content:扩展 ANSI 序列设计(内容上传协议;Cell 扩展为内容判别)
 - [ ] 多插件注册与优先级

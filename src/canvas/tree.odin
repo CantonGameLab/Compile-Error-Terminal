@@ -7,6 +7,7 @@ package canvas
 import ct "../conpty"
 import fnt "../font"
 import mem "../memory"
+import "core:fmt"
 import "core:math"
 
 MAX_TREE_NODE_SLOTS :: 2000
@@ -813,7 +814,12 @@ ConsoleUpdateTree :: proc(node_h : mem.Handle) {
 	layoutWalk(node_h)
 
 	// 遍历③(console):尺寸应用 —— 目标尺寸(rows/cols)与 ConPTY 已应用(pty_*)
-	// 比较,变化才 Resize 并更新已应用记录。工具 console(conpty = 0)跳过。
+	// 比较,变化才 Resize。工具 console(conpty = 0)跳过。
+	//
+	// **只有成功才记"已应用"**:ResizePseudoConsole 会失败(Win10 的 conhost 概率性
+	// 返回失败;窗口拖拽期间连续 resize 也会撞上),而无条件记录 pty_* 会让上面的
+	// 尺寸比较从此永远为假 —— 一次失败 = 永久放弃,表现为"窗口变大了,终端尺寸没
+	// 跟上"(布局用新尺寸、ConPTY 与子进程留在旧尺寸)。失败就不记,下一帧自动重试。
 	it = mem.All(&consoles)
 	for ch in mem.next(&it) {
 		console := mem.Get(&consoles, ch)
@@ -826,8 +832,17 @@ ConsoleUpdateTree :: proc(node_h : mem.Handle) {
 		if console.rows == console.pty_rows && console.cols == console.pty_cols {
 			continue
 		}
-		ct.Resize(console.conpty_handle, console.cols, console.rows)
-		console.pty_rows, console.pty_cols = console.rows, console.cols
+		if ct.Resize(console.conpty_handle, console.cols, console.rows) {
+			console.pty_rows, console.pty_cols = console.rows, console.cols
+			console.resize_retry = 0
+			continue
+		}
+		// 失败:保持 pty_* 落后 → 下帧重试。只报第一次(否则每帧刷屏)
+		if console.resize_retry == 0 {
+			fmt.eprintfln("resize 到 %dx%d 失败,将持续重试(ConPTY 仍在旧尺寸 —— " +
+				"此时子进程按旧宽度排版,屏幕会错位)", console.cols, console.rows)
+		}
+		console.resize_retry += 1
 	}
 
 	layoutWalk :: proc(node_h : mem.Handle) {
@@ -844,7 +859,7 @@ ConsoleUpdateTree :: proc(node_h : mem.Handle) {
 		if console == nil {
 			return
 		}
-		m := fnt.GetMetrics(console.font_id) // 字体 = console 配置(唯一真相)
+		m := fnt.GetMetrics(console.font_set.main_font) // 字体 = console 配置(唯一真相)
 		// 单窗模式:焦点窗布局用有效矩形(树区),隐藏窗照常用自身节点矩形(值不变)
 		ConsoleUpdateLayout(node.console_id, WindowEffectiveRect(node_h), m.cell_width, m.cell_height)
 	}

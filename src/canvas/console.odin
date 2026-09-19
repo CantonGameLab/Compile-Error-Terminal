@@ -22,6 +22,7 @@ MAX_BUFFERS_PER_CONSOLE :: 8
 Console :: struct {
 	rows, cols : u16, // 目标网格尺寸(布局趟真源,每帧由窗口几何重算)
 	pty_rows, pty_cols : u16, // ConPTY 已应用尺寸(尺寸应用趟与 rows/cols 比较判变化)
+	resize_retry : u32, // 尺寸应用连续失败次数(0 = 上一帧成功);仅用于日志去重,失败即重试
 	origin_x, origin_y : f32, // 居中后网格左上角(内容区坐标空间);每帧由 ConsoleUpdateLayout 重算
 	cursor_row, cursor_col : u16, // 指向 active buffer 的物理行
 
@@ -41,13 +42,10 @@ Console :: struct {
 
 	conpty_handle : mem.Handle, // 绑定的 ConPTY;0 = 无会话(空窗格/工具 console)
 
-	// 字体集(引用计数持有者 = 本结构):主字体 + Bold/Italic/BoldItalic 变体
-	// (变体 0 = 无此 face,渲染走合成兜底);font_input 留存原始输入名(字号重载/继承)
-	font_id : mem.Handle,
-	font_bold : mem.Handle,
-	font_italic : mem.Handle,
-	font_bold_italic : mem.Handle,
-	font_input : string,
+	// 字体集(引用计数持有者 = 本结构;见 fontset.odin):
+	// **一份 FontSet 顶替原来的 4 个散句柄 + 输入名** —— 名字与字号在句柄里,
+	// 中文面在创建阶段就按主字体 em 适配。Console 不再单独存任何一个字体。
+	font_set : FontSet,
 
 	input_activity_ms : u64, // 最近用户输入活动时刻(FeedConsole 唯一写点;
 	// render 用于"输入期间光标不闪烁"判定;0 = 从未输入)
@@ -269,28 +267,9 @@ consoleInitSession :: proc(console_h : mem.Handle, rows, cols : u16, conpty_hand
 // ---------------------------------------------------------------------------
 // 字体集(引用计数;console 是唯一持有者)
 // ---------------------------------------------------------------------------
-// 释放字体引用集(主 + 3 变体;各自引用计数归零即可复用)+ 输入名
+// 释放字体集(整批句柄引用 -1;结构清零)
 releaseConsoleFontSet :: proc(console : ^Console) {
-	if console.font_id.id != 0 {
-		fnt.ReleaseFont(console.font_id)
-		console.font_id = {}
-	}
-	if console.font_bold.id != 0 {
-		fnt.ReleaseFont(console.font_bold)
-		console.font_bold = {}
-	}
-	if console.font_italic.id != 0 {
-		fnt.ReleaseFont(console.font_italic)
-		console.font_italic = {}
-	}
-	if console.font_bold_italic.id != 0 {
-		fnt.ReleaseFont(console.font_bold_italic)
-		console.font_bold_italic = {}
-	}
-	if console.font_input != "" {
-		delete(console.font_input)
-		console.font_input = ""
-	}
+	FontSetRelease(&console.font_set)
 }
 
 // 释放应用侧状态(OSC 设置的标题 / 工作目录);重复调用无害
@@ -305,61 +284,20 @@ releaseConsoleAppState :: proc(console : ^Console) {
 	}
 }
 
-// 继承另一 console 的完整字体集(split 承载新会话;引用 ×4 + 输入名 clone)
+// 继承另一 console 的完整字体集(split 承载新会话;整批句柄引用各 +1)
 inheritConsoleFontSet :: proc(dst, src : ^Console) {
-	if src.font_id.id != 0 {
-		dst.font_id = src.font_id
-		fnt.RetainFont(src.font_id)
-	}
-	if src.font_bold.id != 0 {
-		dst.font_bold = src.font_bold
-		fnt.RetainFont(src.font_bold)
-	}
-	if src.font_italic.id != 0 {
-		dst.font_italic = src.font_italic
-		fnt.RetainFont(src.font_italic)
-	}
-	if src.font_bold_italic.id != 0 {
-		dst.font_bold_italic = src.font_bold_italic
-		fnt.RetainFont(src.font_bold_italic)
-	}
-	if src.font_input != "" {
-		dst.font_input = strings.clone(src.font_input)
-	}
+	dst.font_set = src.font_set
+	FontSetRetain(dst.font_set)
 }
 
 // 渲染查询:style(bold/italic)→ 变体字体句柄 + 各维度"合成兜底"标志。
-// 变体存在 = 真 face(不再合成);不存在 = 主字体 + 渲染层按标志兜底
-// (bold_syn → 双描,italic_syn → 斜切)。
+// 选择规则(哪几个句柄配成一套)归 FontSet,这里只是代 console 转一次。
 ConsoleFontVariant :: proc(console_h : mem.Handle, bold, italic : bool) -> (fh : mem.Handle, bold_syn, italic_syn : bool) {
 	console := GetConsole(console_h)
 	if console == nil {
 		return {}, true, true
 	}
-	switch {
-	case bold && italic:
-		if console.font_bold_italic.id != 0 {
-			return console.font_bold_italic, false, false
-		}
-		if console.font_bold.id != 0 {
-			return console.font_bold, false, true
-		}
-		if console.font_italic.id != 0 {
-			return console.font_italic, true, false
-		}
-		return console.font_id, true, true
-	case bold:
-		if console.font_bold.id != 0 {
-			return console.font_bold, false, false
-		}
-		return console.font_id, true, false
-	case italic:
-		if console.font_italic.id != 0 {
-			return console.font_italic, false, false
-		}
-		return console.font_id, false, true
-	}
-	return console.font_id, false, false
+	return FontSetLatinFont(console.font_set, bold, italic)
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +386,22 @@ ConsoleSetSize :: proc(console_h : mem.Handle, rows, cols : u16) -> bool {
 	}
 	applyConsoleSize(console, rows, cols)
 	return true
+}
+
+// 目标网格尺寸(纯计算,不写状态):与 ConsoleUpdateLayout 同一公式。
+// 用途 = **建 ConPTY 之前**先算出正确尺寸(见 LaunchConsole):用写死的 80x24 建会话,
+// 子进程一启动就按错尺寸排版,之后只能靠 resize 纠正 —— 那次 resize 失败
+// (Win10 的 ResizePseudoConsole 会概率性失败,且旧代码失败也记成"已应用")或子进程
+// 没跟上时,尺寸就永久停在旧值,表现为"TUI 认为的尺寸小于终端给它的尺寸"。
+ConsoleGridForRect :: proc(console : ^Console, t : Transform) -> (rows, cols : u16, ok : bool) {
+	if console == nil {
+		return 0, 0, false
+	}
+	m := fnt.GetMetrics(console.font_set.main_font)
+	if m.cell_width <= 0 || m.cell_height <= 0 {
+		return 0, 0, false
+	}
+	return u16(max(1, int(t.height / m.cell_height))), u16(max(1, int(t.width / m.cell_width))), true
 }
 
 ConsoleUpdateLayout :: proc(console_h : mem.Handle, t : Transform, cell_w, cell_h : f32) -> bool {

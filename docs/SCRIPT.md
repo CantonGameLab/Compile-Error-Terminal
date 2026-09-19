@@ -183,6 +183,7 @@ load "C:/my/themes.ceterm"            # 绝对路径原样
 |---|---|---|---|---|
 | `font` | | `"<path\|name>" <size>` | ✓ | 设置窗口字体(路径或系统字体名) |
 | `font` | | `<size>` | ✓ | **单数字参数** = 只改字号(等价 `fontsize`) |
+| `fontset` | | `"<主字体>" "<中文字体>" <size>` | ✓ | **设置字体集**:主字体定字符格,中文字体适配它(全角 = 2 格);中文字体写 `""` = 用系统候选 |
 | `fontsize` | | `<size>` | ✓ | 改字号(保留字体) |
 | `fontsizeup` | | | ✓ | 字号 +2 |
 | `fontsizedown` | | | ✓ | 字号 -2 |
@@ -227,6 +228,7 @@ load "C:/my/themes.ceterm"            # 绝对路径原样
 | `vsync` | | `[on\|off]` | 垂直同步(省略 = 翻转) |
 | `blockloop` | `block` | `[on\|off]` | 主循环阻塞:on = 没活就睡(静止 CPU≈0);off = 每帧无条件跑(排查用) |
 | `fps` | | `[on\|off]` | 状态栏右下角 FPS 标签(**默认关**;省略 = 翻转) |
+| `conpty` | | `[on\|off]` | **新会话**的 ConPTY 实现:on = 外部 `conpty.dll`(新版 OpenConsole);off = 系统 kernel32;省略 = 翻转。**只影响新会话**(已有会话的 HPCON 与实现绑定) |
 | `bgshader` | `bg` | `["<path>"]` | 背景 shader:缺省 = 重载默认文件,带路径 = 编译该文件 |
 | `toggle-commandbar` | `togglebar` | | 命令栏开关 |
 
@@ -244,7 +246,7 @@ selection_bg  selection_fg
 
 | 命令 | 别名 | 参数 | 说明 |
 |---|---|---|---|
-| `default-launch` | `startup` | `"<cmd>" ["<font>" <size>]` | 新建窗口的默认启动配置(`cmd` 空 = 不自动启动) |
+| `default-launch` | `startup` | `"<cmd>" ["<font>" <size> ["<中文字体>"]]` | 新建窗口的默认启动配置(`cmd` 空 = 不自动启动) |
 | `load` | | `"<path>"` | 执行另一个命令文件(见 §3.3) |
 | `cwd` | | `["<path>"]` | 全局会话工作目录:所有新窗口的初始目录(省略 = 查询当前值) |
 

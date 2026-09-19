@@ -187,7 +187,7 @@ selectionBegin :: proc(node_h : mem.Handle, x, y : f32) -> bool {
 	if tb == nil {
 		return false
 	}
-	m := fnt.GetMetrics(console.font_id)
+	m := fnt.GetMetrics(console.font_set.main_font)
 	if m.cell_width <= 0 || m.cell_height <= 0 {
 		return false
 	}
@@ -230,7 +230,7 @@ hostFont :: proc() -> mem.Handle {
 	if console == nil {
 		return {}
 	}
-	return console.font_id
+	return console.font_set.main_font
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import mem "../memory"
 
 ConptyContext :: struct {
 	hpc          : HPCON,
+	impl         : ConptyImpl, // 谁建的:HPCON 只能由同一套实现 resize/close
 	read_conpty  : win.HANDLE, // 读子进程输出(VT 序列)
 	write_conpty : win.HANDLE, // 写键盘输入
 	proc_info    : win.PROCESS_INFORMATION,
@@ -65,7 +66,7 @@ createConptyContextValue :: proc(size: win.COORD, cmd: string, cwd: string) -> (
 		return
 	}
 
-	hpc, hr := createPseudoConsole(size, conpty_side_read, conpty_side_write, 0)
+	hpc, impl, hr := createPseudoConsole(size, conpty_side_read, conpty_side_write, 0)
 	if hr != win.HRESULT(0) {
 		fmt.eprintfln("CreatePseudoConsole returned 0x%X. Windows Terminal calls this same function all day and never whines — it saves the whining for the 1757 open issues on its tracker. This one is yours.", transmute(u32) hr)
 		win.CloseHandle(main_side_write)
@@ -74,6 +75,7 @@ createConptyContextValue :: proc(size: win.COORD, cmd: string, cwd: string) -> (
 	}
 
 	ctx.hpc          = hpc
+	ctx.impl         = impl
 	ctx.read_conpty  = main_side_read
 	ctx.write_conpty = main_side_write
 
@@ -239,7 +241,7 @@ Resize :: proc(h : mem.Handle, cols, rows: u16) -> bool {
 	if conpty_context == nil {
 		return false
 	}
-	hr := resizePseudoConsole(conpty_context.hpc, win.COORD{win.SHORT(cols), win.SHORT(rows)})
+	hr := resizePseudoConsole(conpty_context.impl, conpty_context.hpc, win.COORD{win.SHORT(cols), win.SHORT(rows)})
 	return hr == win.HRESULT(0)
 }
 
@@ -295,7 +297,7 @@ destroyConptyContext :: proc(conpty_context: ^ConptyContext) {
 		return
 	}
 	if conpty_context.hpc != nil {
-		closePseudoConsole(conpty_context.hpc)
+		closePseudoConsole(conpty_context.impl, conpty_context.hpc)
 		conpty_context.hpc = nil
 	}
 	if conpty_context.read_conpty != win.INVALID_HANDLE_VALUE {

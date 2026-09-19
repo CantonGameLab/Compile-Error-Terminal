@@ -116,7 +116,7 @@ updateCursor :: proc() {
 		if console := NodeConsole(n); console != nil {
 			if selection.buffer_h.id != 0 &&
 				console.active_term_buffer_id == selection.buffer_h {
-				m := fnt.GetMetrics(console.font_id)
+				m := fnt.GetMetrics(console.font_set.main_font)
 				tb := GetTermBuffer(selection.buffer_h)
 				if m.cell_width > 0 && m.cell_height > 0 && tb != nil {
 					col := clamp(int((inp.Mouse.x - console.origin_x) / m.cell_width), 0, int(console.cols) - 1)

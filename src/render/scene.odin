@@ -53,7 +53,7 @@ caret :: proc(win : ^s3.Window, p : ^cv.Page) {
 		_ = s3.SetTextInputArea(win, nil, 0)
 		return
 	}
-	m := fnt.GetMetrics(console.font_id)
+	m := fnt.GetMetrics(console.font_set.main_font)
 	if m.cell_width <= 0 || m.cell_height <= 0 {
 		_ = s3.SetTextInputArea(win, nil, 0)
 		return
@@ -393,7 +393,7 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 	if console == nil {
 		return
 	}
-	m := fnt.GetMetrics(console.font_id)
+	m := fnt.GetMetrics(console.font_set.main_font)
 	if m.cell_width <= 0 || m.cell_height <= 0 {
 		return
 	}
@@ -459,11 +459,11 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 		resize(&draw_shaped, col_limit)
 		resize(&draw_orig, col_limit)
 		for c in 0 ..< col_limit {
-			g := fnt.GlyphIndex(console.font_id, line.cells[c].cp)
+			g := fnt.GlyphIndex(console.font_set.main_font, line.cells[c].cp)
 			draw_orig[c] = g
 			draw_shaped[c] = g
 		}
-		fnt.ShapeLine(console.font_id, &draw_shaped)
+		fnt.ShapeLine(console.font_set.main_font, &draw_shaped)
 		// 连体合并(未来 type4)会缩短数组;绘制按缩短后的长度截断
 		draw_limit = min(col_limit, len(draw_shaped))
 		// 第 2 趟:连体字形位图会溢出到相邻格(如 --- 的 32px 连体),
@@ -471,6 +471,7 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 		// 字体变体:style key 变化才查询(变体 face / 合成兜底标志),run 内零查表
 		sty_key := u8(255)
 		fh : mem.Handle
+		cn_fh : mem.Handle // 同档中文面(主面没有字形时用它画)
 		bs, isyn : bool
 		for c in 0 ..< draw_limit {
 			cell := line.cells[c]
@@ -487,6 +488,8 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 			if key != sty_key {
 				sty_key = key
 				fh, bs, isyn = cv.ConsoleFontVariant(console_h, cell.bold, cell.italic)
+				// 同档的中文面也取一次(下面的字形分流要用)
+				cn_fh = cv.FontSetCnFont(console.font_set, cell.bold, cell.italic)
 			}
 			cx := console.origin_x + f32(c) * m.cell_width
 			cy := console.origin_y + f32(r) * m.cell_height
@@ -498,8 +501,16 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 				fg = theme.selection_fg // 选中字形换选区前景(背景已在 1 趟覆盖)
 			}
 			gid := draw_shaped[c]
-			// fh ≠ 主字体时连体 gid 属主字体表:强制普通 cp 路径
-			drawCellGlyph(fh, cell.cp, gid, draw_orig[c], cx, cy + m.ascent, fg, bs, isyn, fh != console.font_id)
+			// **字形分工**(FontSet:主字体定字符格、中文字体补字形):
+			// draw_orig[c] = 主面的 gid,为 0 说明主面没有这个字形 → 改由中文面画。
+			// 旧设计把中文面塞在主句柄内部的 face[1](查得到),独立句柄之后必须在这里
+			// 分流 —— 否则汉字在主面查不到字形,整片中文不显示。
+			src_fh := fh
+			if draw_orig[c] == 0 && cn_fh.id != 0 {
+				src_fh = cn_fh
+			}
+			// src_fh ≠ 主字体时连体 gid 不属它:强制普通 cp 路径
+			drawCellGlyph(src_fh, cell.cp, gid, draw_orig[c], cx, cy + m.ascent, fg, bs, isyn, src_fh != console.font_set.main_font)
 		}
 		// 装饰线(下划线/删除线/上划线):样式 run 合并,画在字形之上
 		drawDecoLine(line, col_limit, r, console, m, theme.fg)
@@ -540,8 +551,14 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 						if int(console.cursor_col) < len(line.cells) {
 							cell := line.cells[int(console.cursor_col)]
 							if cell.cp != 0 {
-								// 粗体字符同样双描重绘(否则光标块下残留 1px 粗体边)
-								drawCellGlyph(console.font_id, cell.cp, 0, 0, cx, cy + m.ascent, theme.bg, false, false, false)
+								// 粗体字符同样双描重绘(否则光标块下残留 1px 粗体边)。
+								// 字形分工同字形趟:主面没有这个字形(汉字)→ 用中文面,
+								// 否则光标块下会缺字。
+								cur_fh := console.font_set.main_font
+								if fnt.GlyphIndex(cur_fh, cell.cp) == 0 && console.font_set.cn_font.id != 0 {
+									cur_fh = console.font_set.cn_font
+								}
+								drawCellGlyph(cur_fh, cell.cp, 0, 0, cx, cy + m.ascent, theme.bg, false, false, false)
 							}
 						}
 					}

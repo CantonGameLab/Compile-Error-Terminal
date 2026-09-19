@@ -113,6 +113,7 @@ Font :: struct {
 	face_count : u32,
 	gsub : Gsub, // 主字体 GSUB 连体规则;无连体时 lookup_order 为空,ShapeLine 空转
 	antialias : u8, // 光栅化超采样倍数 1-3;相对静止,LoadFont 时一次设定
+	em_px : f32, // > 0 = 按 em 对齐加载(FontSet 的中文字面);0 = 常规按 size
 	cell_width, cell_height : f32,
 	ascent : f32,
 	path : string, // 加载路径(去重键:同 path+size 复用,不重复加载)
@@ -749,7 +750,9 @@ SYSTEM_FONT_DIR :: "C:\\Windows\\Fonts\\"
 // 找不到再当作完整路径加载。
 // 去重:同 (path, size) 直接返回已有字体(字体全局共享,不重复加载/不随窗口销毁)。
 // quiet = 失败不打印(变体猜测失败是常态,不刷日志)。
-LoadFont :: proc(path_or_name : string, size : f32, antialias : u8 = 1, quiet := false) -> (h : mem.Handle, ok : bool) {
+// with_fallback = 主字体缺中文时自动附一个系统中文面(face[1])。
+// FontSet 自己带中文字体句柄,所以它传 false —— 否则同一个中文文件会被读两份。
+LoadFont :: proc(path_or_name : string, size : f32, antialias : u8 = 3, quiet := false, with_fallback := true, em_px : f32 = 0) -> (h : mem.Handle, ok : bool) {
 	if size <= 0 {
 		return {}, false
 	}
@@ -759,7 +762,7 @@ LoadFont :: proc(path_or_name : string, size : f32, antialias : u8 = 1, quiet :=
 	// 同 path+size 复用已加载的字体(跨窗口共享;命中 = 新增一个引用)
 	fit : mem.RcIter(MAX_FONT_SLOTS, Font) = mem.RcAll(&fonts)
 	for h in mem.nextRc(&fit) {
-		if f := mem.RcGet(&fonts, h); f != nil && f.path == path && f.size == size {
+		if f := mem.RcGet(&fonts, h); f != nil && f.path == path && f.size == size && f.em_px == em_px {
 			if path_alloc {
 				delete(path) // 堆分配副本,未入字体则释放
 			}
@@ -769,7 +772,7 @@ LoadFont :: proc(path_or_name : string, size : f32, antialias : u8 = 1, quiet :=
 	}
 	font := Font { antialias = max(1, min(3, antialias)) }
 	font.slots = make([dynamic]GlyphSlot, 64) // 哈希桶,装 0.75 后翻倍
-	face, fok := faceLoad(path, size)
+	face, fok := faceLoad(path, size, em_px)
 	if !fok {
 		if !quiet {
 			fmt.eprintln("faceLoad() opened your font and found a body. kitty would have fallen back through six fonts, shaped ligatures out of thin air and felt smug about it. You typed the path wrong:", path, size)
@@ -783,8 +786,9 @@ LoadFont :: proc(path_or_name : string, size : f32, antialias : u8 = 1, quiet :=
 	font.faces[0] = face
 	font.face_count = 1
 
-	// 主字体无 CJK 字形 → 附系统中文字体
-	if stbtt.FindGlyphIndex(&font.faces[0].info, '你') == 0 {
+	// 主字体无 CJK 字形 → 附系统中文字体(with_fallback = false 时跳过:
+	// FontSet 自行持中文字体句柄,不在这里重复加载)
+	if with_fallback && stbtt.FindGlyphIndex(&font.faces[0].info, '你') == 0 {
 		// fallback 按主字体 em 像素尺寸对齐,保证同字号下汉字与拉丁字形等大。
 		// 主字体 em 像素 = scale × unitsPerEm;unitsPerEm = 1 / ScaleForMappingEmToPixels(info, 1.0)
 		main_em_px := font.faces[0].scale / stbtt.ScaleForMappingEmToPixels(&font.faces[0].info, 1.0)
@@ -810,7 +814,11 @@ LoadFont :: proc(path_or_name : string, size : f32, antialias : u8 = 1, quiet :=
 	font.underline_pos, font.underline_thick, font.strike_pos, font.strike_thick = decoMetrics(f, cell_h)
 	advance : c.int
 	stbtt.GetCodepointHMetrics(&f.info, 'M', &advance, nil)
-	font.cell_width = math.ceil(f32(advance) * f.scale)
+	// 取整用 round,**不是 ceil**(与上面 cell_height 同策略,也与 WT 一致:
+	// microsoft/terminal#13833 "Round cell sizes to nearest instead of up")。
+	// ceil 会在真实推进宽是 10.0000001 时给出 11 —— 每字白送 1px、整行发松;
+	// 实测 20px 字号下 ceil 比 round 宽 10%,40px 下宽 5%。
+	font.cell_width = math.round(f32(advance) * f.scale)
 
 	atlasInit(&font.atlas)
 
@@ -845,7 +853,7 @@ RetainFont :: proc(h : mem.Handle) -> bool {
 //   ② 文件命名:base 解析到真实文件 → 同目录 `<stem>[-风格尾缀去]` + `-<file_suffix>` + 扩展
 //      (Nerd Fonts / Google Fonts 命名,如 ...Mono-Regular.ttf → ...Mono-Bold.ttf)。
 // 都没有 = 0(调用方用合成兜底);失败静默(变体缺失是常态)。
-LoadFontVariant :: proc(base : string, size : f32, family_suffix, file_suffix : string) -> mem.Handle {
+LoadFontVariant :: proc(base : string, size : f32, family_suffix, file_suffix : string, em_px : f32 = 0) -> mem.Handle {
 	// ① 族名习惯
 	{
 		buf : [512]byte
@@ -853,7 +861,7 @@ LoadFontVariant :: proc(base : string, size : f32, family_suffix, file_suffix : 
 		if n + 1 + len(family_suffix) <= len(buf) {
 			copy(buf[n:], " ")
 			copy(buf[n + 1:], family_suffix)
-			if h, ok := LoadFont(string(buf[:n + 1 + len(family_suffix)]), size, 1, true); ok {
+			if h, ok := LoadFont(string(buf[:n + 1 + len(family_suffix)]), size, 3, true, true, em_px); ok {
 				return h
 			}
 		}
@@ -901,7 +909,7 @@ LoadFontVariant :: proc(base : string, size : f32, family_suffix, file_suffix : 
 	if vn >= len(vbuf) {
 		return {}
 	}
-	if h, ok := LoadFont(string(vbuf[:vn]), size, 1, true); ok {
+	if h, ok := LoadFont(string(vbuf[:vn]), size, 3, true, true, em_px); ok {
 		return h
 	}
 	return {}
@@ -942,6 +950,38 @@ GetGlyph :: proc(h : mem.Handle, cp : rune) -> (Glyph, bool) {
 		return {}, false
 	}
 	return glyphFromSlot(slot), true
+}
+
+// 该字体的 **em 像素尺寸**(= scale ÷ ScaleForMappingEmToPixels(info,1.0))。
+// FontSet 用它把中文字面按同一 em 加载 —— 两个字体字形等大的前提(见 faceLoad 注释)。
+FontEmPixels :: proc(h : mem.Handle) -> f32 {
+	font := GetFont(h)
+	if font == nil || font.face_count == 0 {
+		return 0
+	}
+	s := stbtt.ScaleForMappingEmToPixels(&font.faces[0].info, 1.0)
+	if s <= 0 {
+		return 0
+	}
+	return font.faces[0].scale / s
+}
+
+// 某字符在该字体下的**自然推进宽**(像素,未取整)。
+// 用途:FontSet 拿它算"中文铺满整数格"所需的横向拟合系数 —— 这是字体对的
+// 性质,不能烘进 (Font, Size) 句柄,所以由调用方每次算。
+// 面选择与 glyphFaceIndex 同规则(第一个含该字形的面);无此字形 = 0。
+FontAdvance :: proc(h : mem.Handle, r : rune) -> f32 {
+	font := GetFont(h)
+	if font == nil || font.face_count == 0 {
+		return 0
+	}
+	idx, ok := glyphFaceIndex(h, r)
+	if !ok {
+		return 0
+	}
+	a : c.int
+	stbtt.GetCodepointHMetrics(&font.faces[idx].info, r, &a, nil)
+	return f32(a) * font.faces[idx].scale
 }
 
 GetMetrics :: proc(h : mem.Handle) -> Metrics {
@@ -1047,7 +1087,12 @@ GetAtlasTexture :: proc(h : mem.Handle) -> u32 {
 // face
 // ---------------------------------------------------------------------------
 
-faceLoad :: proc(path : string, size : f32) -> (Face, bool) {
+// em_px > 0 = 按 **em 像素尺寸**定 scale(而不是 ScaleForPixelHeight(size))。
+// 为什么需要:Size 在本模块里是"ascent+descent 映射到多少像素",而**不是 em** ——
+// 不同字体的 asc/desc 占比不同,同一个 size 下 em 各不相同(实测 32px:雅黑 em=24.25、
+// 黑体 em=32.00、FiraCode em=26.00)。要让两个字体**字形等大**,必须让 em 相等
+// (同 faceLoadFallback 的注释)。FontSet 的中文字面就走这条路。
+faceLoad :: proc(path : string, size : f32, em_px : f32 = 0) -> (Face, bool) {
 	data, err := os.read_entire_file_from_path(path, context.allocator)
 	if err != nil {
 		return {}, false
@@ -1058,7 +1103,11 @@ faceLoad :: proc(path : string, size : f32) -> (Face, bool) {
 		delete(data)
 		return {}, false
 	}
-	face.scale = stbtt.ScaleForPixelHeight(&face.info, size)
+	if em_px > 0 {
+		face.scale = stbtt.ScaleForMappingEmToPixels(&face.info, em_px)
+	} else {
+		face.scale = stbtt.ScaleForPixelHeight(&face.info, size)
+	}
 	return face, true
 }
 

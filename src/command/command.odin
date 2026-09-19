@@ -20,6 +20,7 @@
 // 供命令栏 / 配置文件(command/config.odin) / 子进程 ANSI 指令通道使用。薄分派层,无 undo。
 package command
 
+import ct "../conpty"
 import cv "../canvas"
 import inp "../input"
 import mem "../memory"
@@ -54,6 +55,7 @@ CommandStringKind :: enum u8 {
 	Head,         // ival(行数)+ target
 	// 字体 / 会话
 	Font,         // sval + fval
+	FontSet,      // sval(主字体)+ sval2(中文字体,"" = 系统候选)+ fval(字号)
 	FontSize,     // fval
 	FontSizeUp,
 	FontSizeDown,
@@ -86,6 +88,7 @@ CommandStringKind :: enum u8 {
 	VSync,          // mode
 	BlockLoop,      // mode:主循环阻塞(事件驱动)vs 忙等(无条件每帧)
 	FpsTag,         // mode:状态栏 FPS 标签显示开关(默认关)
+	Conpty,         // mode:新会话用外部 conpty.dll(OpenConsole)还是系统 kernel32
 	BgShader,       // sval(空 = 重载默认文件)
 	ToggleCommandBar,
 	DefaultLaunch,  // sval(cmd)+ sval2(font)+ fval(size)
@@ -116,7 +119,8 @@ ParsedCommand :: struct {
 	fval : f32,               // Split factor / Factor / Font size / Scroll 行数 / DefaultLaunch size
 	ival : int,               // FactorLeaf 叶子序号 / Page 序号
 	sval : string,            // 第一字符串参数(借用输入内存)
-	sval2 : string,           // 第二字符串参数(仅 DefaultLaunch 的字体名)
+	sval2 : string,           // 第二字符串参数(DefaultLaunch 的字体名 / FontSet 的主字体)
+	sval3 : string,           // 第三字符串参数(DefaultLaunch 的中文字体)
 	sc : u32,                 // SetBinding/UnsetBinding:scancode 数值
 	mods : KeyMods,           // SetBinding/UnsetBinding:修饰位
 	color : u32,              // ThemeSet:24bit RGB
@@ -242,6 +246,9 @@ ExecuteCommand :: proc(cmd : ParsedCommand) -> (ret : string, ok : bool) {
 	// ---- 字体 / 会话 ----
 	case .Font:
 		ok = cv.SetConsoleFont(cmd.sval, cmd.fval, cmd.target)
+	case .FontSet:
+		// 中文字体给 "" = 用 font 模块的候选表(与只给主字体的历史行为一致)
+		ok = cv.SetConsoleFontSet(cmd.sval, cmd.sval2, cmd.fval, cmd.target)
 	case .FontSize:
 		ok = cv.SetConsoleFontSize(cmd.fval, cmd.target)
 	case .FontSizeUp:
@@ -415,6 +422,30 @@ ExecuteCommand :: proc(cmd : ParsedCommand) -> (ret : string, ok : bool) {
 		cv.SetFpsTagVisible(on)
 		ret = fmt.aprintf("%s", on ? "fps 标签: on" : "fps 标签: off")
 		ok = true
+	case .Conpty:
+		// 新会话的 ConPTY 实现来源(外部 conpty.dll = Windows Terminal 的 OpenConsole
+		// 实现;系统 = 装箱 conhost)。只影响新会话 —— 已有会话的 HPCON 与实现绑定。
+		on := ct.GetConptyPreferExternal()
+		switch cmd.mode {
+		case .On:
+			on = true
+		case .Off:
+			on = false
+		case .Toggle:
+			on = !on
+		}
+		if ct.SetConptyPreferExternal(on) {
+			if on {
+				ret = fmt.aprintf("conpty: 外部 conpty.dll(新会话生效;导出名 = %s)", ct.GetConptyExportSet())
+			} else {
+				ret = fmt.aprintf("conpty: 系统 kernel32(新会话生效;%s)",
+					ct.ConptyExternalAvailable() ? "外部实现已加载,可 conpty on 切回" : "这台机器上没有外部实现")
+			}
+			ok = true
+		} else {
+			ret = fmt.aprintf("%s", "conpty: 没有可用的外部 conpty.dll —— 需要在 exe 同目录放 conpty.dll + OpenConsole.exe")
+			ok = false
+		}
 	case .BgShader:
 		if cmd.sval == "" {
 			ok = rnd.ResetBackgroundShader()
@@ -425,7 +456,7 @@ ExecuteCommand :: proc(cmd : ParsedCommand) -> (ret : string, ok : bool) {
 		cv.ToggleCommandBar()
 		ok = true
 	case .DefaultLaunch:
-		cv.SetDefaultLaunch(cmd.sval, cmd.sval2, cmd.fval)
+		cv.SetDefaultLaunch(cmd.sval, cmd.sval2, cmd.sval3, cmd.fval)
 		ok = true
 	case .Load:
 		ok = configLoadFile(cmd.sval)
@@ -625,10 +656,13 @@ ParseCommandStringEx :: proc(s : string, errbuf : []u8) -> (pc : ParsedCommand, 
 				}
 			}
 			if !size_only {
-				if str_seen == 0 {
+				switch str_seen {
+				case 0:
 					pc.sval = tok
-				} else {
+				case 1:
 					pc.sval2 = tok
+				case:
+					pc.sval3 = tok
 				}
 				str_seen += 1
 			}
@@ -737,13 +771,19 @@ FormatCommand :: proc(cmd : ParsedCommand, buf : []u8) -> string {
 	}
 	cat(buf, &n, spec.name)
 	str_seen := 0
-	arg_loop: for i in 0 ..< MAX_CMD_ARGS {
+	arg_loop: for i in 0 ..< len(spec.args) {
 		switch spec.args[i] {
 		case .None:
 			break arg_loop
 		case .Str:
-			// 第二个 Str 参数取 sval2(DefaultLaunch 的字体名)
-			s := str_seen == 0 ? cmd.sval : cmd.sval2
+			// 第 1/2/3 个 Str 参数分别取 sval/sval2/sval3(DefaultLaunch 的 cmd+字体集)
+			s := cmd.sval
+			switch str_seen {
+			case 1:
+				s = cmd.sval2
+			case 2:
+				s = cmd.sval3
+			}
 			if s == "" {
 				break arg_loop
 			}

@@ -563,28 +563,6 @@ vtEscDispatch :: proc(console_h : mem.Handle, final : u8) {
 // ---------------------------------------------------------------------------
 // C0
 // ---------------------------------------------------------------------------
-// 光标列落在宽字符续列(cp=0 + wide)时,再向 dir 方向挪一列;越出网格则 clamp。
-// 注意:宽字符写不下最后一列会折行,故 cols-1 不会是续列;但 resize 缩窄后
-// cells 可能超出 cols,此处仍要保护。
-skipWideCol :: proc(console : ^Console, col : int, dir : int) -> int {
-	tb := GetTermBuffer(console.active_term_buffer_id)
-	if tb == nil {
-		return col
-	}
-	row := int(console.cursor_row)
-	if row < 0 || row >= len(tb.lines) {
-		return col
-	}
-	c := clamp(col, 0, int(console.cols) - 1)
-	if c >= 0 && c < len(tb.lines[row].cells) {
-		cell := tb.lines[row].cells[c]
-		if cell.cp == 0 && cell.wide {
-			c = clamp(c + dir, 0, int(console.cols) - 1)
-		}
-	}
-	return c
-}
-
 vtHandleC0 :: proc(console_h : mem.Handle, b : u8) {
 	console := GetConsole(console_h)
 	if console == nil {
@@ -595,10 +573,14 @@ vtHandleC0 :: proc(console_h : mem.Handle, b : u8) {
 	}
 	switch b {
 	case 0x07: // BEL,忽略(不取消折行等待)
-	case 0x08: // BS,左移不删字符(跳过宽字符续列)
+	case 0x08: // BS,左移不删字符
+		// **标准语义 = 光标列 -1**(xterm/WT 一致),即使落在宽字续列上也照停。
+		// 曾经这里"跳过续列"多挪一列 —— 那会让终端与应用的列算术错开:zsh/zle、
+		// vim 都按自己的模型发相对位移,一旦错开,后续擦除/重写就落错格、劈开
+		// 宽字对(表现为"纯输入正常、一退格整行就乱")。实测:\b 从 14 直接跳到 12。
 		console.vt.wrap_pending = false
 		if console.cursor_col > 0 {
-			console.cursor_col = u16(skipWideCol(console, int(console.cursor_col) - 1, -1))
+			console.cursor_col -= 1
 		}
 	case 0x09: // TAB,下一 8 列停靠位
 		console.vt.wrap_pending = false
@@ -757,23 +739,21 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 		}
 		screen_row = min(limit, screen_row + n)
 		console.cursor_row = u16(base + screen_row)
-	case 'C': // CUF(右移 n 列;宽字符续列不可停,落在续列再前进)
+	case 'C': // CUF(右移 n 列;纯算术,光标可停在宽字续列上 —— 同 xterm)
 		vt.wrap_pending = false
 		n := max(1, p0)
 		c := int(console.cursor_col) + n
 		if c > int(console.cols) - 1 {
 			c = int(console.cols) - 1
 		}
-		c = skipWideCol(console, c, 1)
 		console.cursor_col = u16(c)
-	case 'D': // CUB(左移 n 列;宽字符续列不可停,落在续列再后退)
+	case 'D': // CUB(左移 n 列;纯算术,同 CUF)
 		vt.wrap_pending = false
 		n := max(1, p0)
 		c := int(console.cursor_col) - n
 		if c < 0 {
 			c = 0
 		}
-		c = skipWideCol(console, c, -1)
 		console.cursor_col = u16(c)
 	case 'H', 'f': // CUP(1-based;origin 下相对滚动区顶)
 		when VT_DEBUG { vtDbg(console_h, fmt.tprintf("CUP p0=%d p1=%d base=%d", p0, p1, base)) }
@@ -843,9 +823,19 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 				vtReplyOk(console_h) // 设备状态正常
 			}
 		}
-	case 't': // XTWINOPS:18 = 窗口尺寸查询
-		if p0 == 18 {
+	case 't': // XTWINOPS(窗口操作 / 查询)
+		// 查询类必须应答;操作类(1 去图标化 / 2 最小化 / 3 移动 / 4 缩放 / 5-7 …)我们
+		// 改不了自己的窗口,忽略。新版 conpty(OpenConsole)启动阶段就会发 `CSI 1t`,
+		// 并且关心窗口状态与尺寸 —— 只回 18 是不够的。
+		switch p0 {
+		case 11: // 报告窗口状态
+			vtReplyWindowState(console_h)
+		case 14: // 报告窗口尺寸(像素)
+			vtReplyWindowPixelSize(console_h)
+		case 18: // 报告文本区尺寸(字符)
 			vtReplyWindowSize(console_h)
+		case 19: // 报告屏幕尺寸(字符)
+			vtReplyScreenCharSize(console_h)
 		}
 	case 'c': // DA 设备属性
 		if private == '>' {
@@ -1113,6 +1103,40 @@ vtReplyWindowSize :: proc(console_h : mem.Handle) {
 		return
 	}
 	msg := fmt.aprintf("\x1b[8;%d;%dt", console.rows, console.cols)
+	defer delete(msg)
+	ct.WriteConptyInput(console.conpty_handle, transmute([]byte)msg)
+}
+
+// XTWINOPS 11t:窗口状态应答 → CSI 1t(正常态;我们不会把自己最小化)
+vtReplyWindowState :: proc(console_h : mem.Handle) {
+	console := GetConsole(console_h)
+	if console == nil {
+		return
+	}
+	ct.WriteConptyInput(console.conpty_handle, transmute([]byte)string("\x1b[1t"))
+}
+
+// XTWINOPS 14t:窗口像素尺寸应答 → CSI 4;高;宽 t
+// 用 canvas 自己的窗口几何(canvas 不能反向依赖 render);Window_Height 是树区,
+// 加回底部页签条才是整窗高度。
+vtReplyWindowPixelSize :: proc(console_h : mem.Handle) {
+	console := GetConsole(console_h)
+	if console == nil {
+		return
+	}
+	h := Window_Height + u32(TAB_BAR_HEIGHT)
+	msg := fmt.aprintf("\x1b[4;%d;%dt", h, Window_Width)
+	defer delete(msg)
+	ct.WriteConptyInput(console.conpty_handle, transmute([]byte)msg)
+}
+
+// XTWINOPS 19t:屏幕字符尺寸应答 → CSI 9;行;列 t(我们没有独立"屏幕",与文本区同)
+vtReplyScreenCharSize :: proc(console_h : mem.Handle) {
+	console := GetConsole(console_h)
+	if console == nil {
+		return
+	}
+	msg := fmt.aprintf("\x1b[9;%d;%dt", console.rows, console.cols)
 	defer delete(msg)
 	ct.WriteConptyInput(console.conpty_handle, transmute([]byte)msg)
 }
