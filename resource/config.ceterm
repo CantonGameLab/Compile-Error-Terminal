@@ -25,8 +25,11 @@ default-launch "zsh" "Hack Nerd Font" 25 "SimSun"
 # 已存在的窗格要换字体集,用 fontset(缺省作用于焦点窗格;末尾 @id 指定目标):
 # fontset "Hack Nerd Font" "Microsoft JhengHei" 25
 # fontset "Hack Nerd Font" "" 25
+# 字形光栅化:stb(无 hinting)/off/light/normal(默认 normal,需要 resource/freetype/x64/ 载荷)
+# hinting normal
 vsync off
 borderless off
+blockloop off
 bgshader
 
 cwd "C:/Users/GroupTheory"

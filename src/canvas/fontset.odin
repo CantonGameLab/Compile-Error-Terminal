@@ -69,7 +69,7 @@ FontSetCreate :: proc(main_name, cn_name : string, size : f32) -> (set : FontSet
 	}
 	// 主字体:**不带自动回退面**(with_fallback = false)——
 	// 中文由本结构单独持句柄,否则同一个中文字体文件会被读两份
-	main_h, mok := fnt.LoadFont(main_name, size, 1, false, false)
+	main_h, mok := fnt.LoadFont(main_name, size, false, false)
 	if !mok {
 		return {}, false
 	}
@@ -239,7 +239,7 @@ FontSetCnFont :: proc(set : FontSet, bold, italic : bool) -> mem.Handle {
 // ---------------------------------------------------------------------------
 // 载入中文面三件套(常规 + 粗 + 斜);加载失败 = false(调用方试下一个候选)
 loadCn :: proc(set : ^FontSet, name : string, size : f32, em_px : f32) -> bool {
-	h, ok := fnt.LoadFont(name, size, 3, false, false, em_px)
+	h, ok := fnt.LoadFont(name, size, false, false, em_px)
 	if !ok {
 		return false
 	}

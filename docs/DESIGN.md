@@ -101,6 +101,12 @@ Window(leaf 节点)= 一个 App = 一个 ConPTY 子进程
 - 路径串**零分配**:`ResourceRoot()` 借用定长缓冲,`Resource(sub)` 借用一个共享拼接缓冲(**直到下一次 `Resource` 调用失效**)。
 - 依赖只有 `core:os` + `core:sys/windows`,**不挂 SDL**,任何初始化之前都能用。
 
+**随包第三方载荷**(都在资源根下,exe 旁边不留散文件):`conpty/x64/`(新版 OpenConsole,见 `conpty` 命令)、
+`freetype/x64/`(`freetype.dll` + `zlib1.dll`,字形 hinting,见 `hinting` 命令)。两者都是**可选载荷**:
+缺失时各自退回系统实现 / stb 光栅化,只打一行 stderr。FreeType 的两个文件必须同目录,且加载方式有坑
+(`LoadLibraryExW` 的 ALTERED / `LOAD_LIBRARY_SEARCH_*` 标志在本机被代码完整性策略拒掉,报 15700 / 577),
+详见 `resource/freetype/README.md` 与 `playground/ftdll/`。
+
 ## 4. 程序状态(数据结构设计)
 
 ### 4.0 主题(配色)数据
@@ -238,6 +244,15 @@ focused : mem.Handle        // 该页聚焦的 leaf 节点;0 = 无
 - `ConptyContext`:hpc / 管道 / 进程信息 / Job Object(进程树跟踪 + KILL_ON_JOB_CLOSE 清理)。
 - **会话结束判定 = 双信号取或**:主进程退出(`IsChildAlive`,GetExitCodeProcess)+ 读线程 dead(管道断开)。只信读线程会漏 `cmd exit`(conhost 保活管道写端,ReadFile 永不 EOF);只信 Job 会误杀脱离 Job 的 msys2(`JobActiveProcesses` 恒 0,**该函数已不存在**)。
 - `Font`:faces / GSUB / 图集 / shape 缓存;引用计数持有者 = 各窗格 `Console`(`RetainFont` / `ReleaseFont`,归零的槽留待 `Alloc` 复用)。
+- **字形采样链路(唯一路径)**:字体文件 → `Face`(每 Font 至多 2 面:主字体 + 中文 fallback)→ **光栅化** → `GlyphSlot`(哈希缓存)→ 图集字节 → GL 纹理 → quad(1:1)→ 混合上屏。分层原则:
+  - **度量与位图分离**:`cell_width/cell_height/ascent/advance/underline` 一律取自 stb(与 WT 公式同源、与 FontSet 的 em 对齐一致);FreeType **只负责"这张位图长什么样"**。换后端不会移动布局。
+  - **两个光栅化后端**,运行时由 `hinting` 决定:`Hinting.Stb`(stb_truetype,无 hinting)/ `.Off` / `.Light` / `.Normal`(FreeType,默认)。FreeType 载荷缺失 → 自动退回 stb,只打一行 stderr。
+  - **stb 现在不是"光栅化后端",而是度量/字形身份层**(别把它当历史包袱删掉):cell 高与基线公式、em 对齐、advance、下划线/删除线、家族名解析、cmap→gid(`FindGlyphIndex`,连体/shape 缓存/gid 槽的键空间)、sfnt/TTC 目录定位(`GetFontOffsetForIndex`,gsub.odin 也借它)全部来自 stb;光栅化只剩 `glyphPending` 里的一个分支。**FreeType 替代不了 GSUB**(它没有 OpenType 布局引擎,连体是我们自己解析原始字节),而且 stb 是零依赖兜底:载荷缺失/架构不符/被杀软隔离时仍能显示文字。
+  - **先出位图、再分配图集**:`glyphPending`(后端 → `Font.raster_scratch` 紧凑位图)→ `atlasAlloc`(按**实际**位图尺寸 + 2px pad)→ `atlasWrite`(逐行拷入 + 裁到 cell + 算 UV)。尺寸必须来自后端:hinting 会改变位图盒,按 outline 盒预分配会越界。
+  - **图集**:单通道 R8,行式分配(`cur_x/cur_y/row_height`),满则 `atlasGrow` 尺寸翻倍并**重新光栅化**全部缓存字形(因此重放必须走 `glyphPending`,不能拿裁剪后的 `slot.w/h` 当盒——否则框线类竖高字形错位);`ATLAS_PAD = 1` 防线性采样串色。
+  - **上屏是 1:1 的**:`writeQuad` 把顶点四舍五入到整数像素,quad 尺寸 = 位图尺寸,UV 对准图集内容区 ⇒ LINEAR 采样正好落在纹素中心,**GPU 不做重采样**。所以屏幕质量 = CPU 位图质量,调 GPU 侧(MSAA/滤波)无效。窗口尺寸取 `GetWindowSizeInPixels`(物理像素,不受 DPI 缩放)。
+  - **混合**:`main.frag` 用 DirectWrite 同源的 gamma 校正 + 对比度增强(`ENHANCED_CONTRAST = 0.5`,与 WT 的 `DWrite_GrayscaleBlend` 对齐);对 alpha=1 的矩形是恒等,只作用于字形覆盖率。
+  - 光栅化参数变化(切 `hinting`)后 `InvalidateGlyphCaches()` 清缓存 + 复位图集分配游标,下一帧按新参数重新光栅化。
 - `Theme`:canvas 数据(唯一写者;见 4.0),渲染层每帧 `GetTheme` 只读消费。
 - `session_cwd`:配置默认工作目录(命令 `cwd` 写);真正的目录记忆在**各** `Console.cwd`——全局单值会被 shell 每次提示符的 OSC 7 上报打回原形。
 
@@ -455,10 +470,12 @@ RingHasData(h) / AnyRingHasData() -> bool          // 环形缓冲是否还有�
 InitWakeEvent() / wakeMainLoop()                   // 读线程唤醒主循环(线程安全 PushEvent)
 
 // font
-LoadFont(path_or_name, size, antialias : u8 = 1) -> (h, ok)
+LoadFont(path_or_name, size, quiet := false, with_fallback := true, em_px := 0) -> (h, ok)
 RetainFont(h) / ReleaseFont(h) / GetFont(h) / GetMetrics(h)   // 引用计数持有者 = Console
 GetGlyph(h, cp) / GetGlyphById(h, gid) / GlyphIndex(h, cp)
 GetAtlasTexture(h) / ShapeLine(h, ^[dynamic]u16) / ShapeGlyphs(&gsub, ^[dynamic]u16)
+SetHinting(Hinting) / GetHinting() / InvalidateGlyphCaches()  // 光栅化模式(命令 hinting);切完清缓存重光栅化
+FtAvailable() / FtVersion()                                   // FreeType 载荷状态(freetype/x64/)
 
 // render
 Init / Quit / GetWindowSize / GetWindow

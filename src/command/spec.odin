@@ -273,6 +273,11 @@ COMMAND_SPECS := [?]CommandSpec {
 		help = "新会话的 ConPTY 实现:on = 外部 conpty.dll(新版 OpenConsole);off = 系统 kernel32;省略 = 翻转。只影响新会话",
 	},
 	{
+		name = "hinting", kind = .Hinting, args = {.Str, .None, .None}, req = 0,
+		usage = "[stb|off|light|normal]",
+		help = "字形光栅化:stb = 无 hinting(旧行为);off/light/normal = FreeType 提示强度;省略 = 显示当前。切换后字形缓存重新光栅化",
+	},
+	{
 		name = "bgshader", alias = "bg", kind = .BgShader, args = {.Str, .None, .None}, req = 0,
 		usage = `["<path>"]`,
 		help = "背景 shader:缺省 = 重载默认文件,带路径 = 编译该文件",

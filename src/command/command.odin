@@ -22,6 +22,7 @@ package command
 
 import ct "../conpty"
 import cv "../canvas"
+import fnt "../font"
 import inp "../input"
 import mem "../memory"
 import rnd "../render"
@@ -89,6 +90,7 @@ CommandStringKind :: enum u8 {
 	BlockLoop,      // mode:主循环阻塞(事件驱动)vs 忙等(无条件每帧)
 	FpsTag,         // mode:状态栏 FPS 标签显示开关(默认关)
 	Conpty,         // mode:新会话用外部 conpty.dll(OpenConsole)还是系统 kernel32
+	Hinting,        // sval(空 = 显示当前):字形光栅化模式(stb/off/light/normal)
 	BgShader,       // sval(空 = 重载默认文件)
 	ToggleCommandBar,
 	DefaultLaunch,  // sval(cmd)+ sval2(font)+ fval(size)
@@ -446,6 +448,30 @@ ExecuteCommand :: proc(cmd : ParsedCommand) -> (ret : string, ok : bool) {
 			ret = fmt.aprintf("%s", "conpty: 没有可用的外部 conpty.dll —— 需要在 exe 同目录放 conpty.dll + OpenConsole.exe")
 			ok = false
 		}
+	case .Hinting:
+		// 字形光栅化模式(stb = 无 hinting;off/light/normal = FreeType 提示强度)。
+		// 切完必须让字形缓存重新光栅化 —— 位图内容与尺寸都会变。
+		if cmd.sval == "" {
+			ret = fmt.aprintf("hinting: %s(FreeType %s)%s", fnt.HintingName(fnt.GetHinting()),
+				fnt.FtVersion(), fnt.FtAvailable() ? "" : " —— DLL 不可用,实际走 stb")
+			ok = true
+			return
+		}
+		m, mok := fnt.HintingByName(cmd.sval)
+		if !mok {
+			ret = fmt.aprintf("hinting: 未知模式 %s(用法: stb|off|light|normal)", cmd.sval)
+			ok = false
+			return
+		}
+		if m != .Stb && !fnt.FtAvailable() {
+			ret = fmt.aprintf("%s", "hinting: FreeType 不可用(需要 resource/freetype/x64/freetype.dll + zlib1.dll),只能用 stb")
+			ok = false
+			return
+		}
+		fnt.SetHinting(m)
+		fnt.InvalidateGlyphCaches()
+		ret = fmt.aprintf("hinting: %s", fnt.HintingName(m))
+		ok = true
 	case .BgShader:
 		if cmd.sval == "" {
 			ok = rnd.ResetBackgroundShader()

@@ -66,8 +66,9 @@ FALLBACK_FONTS :: []string {
 }
 
 Face :: struct {
-	data : []byte, // 字体文件内容;stbtt 表指针引用它,必须保活
+	data : []byte, // 字体文件内容;stbtt 表指针引用它,必须保活(FreeType 亦然)
 	info : stbtt.fontinfo,
+	ft : FT_Face, // FreeType 面(光栅化用);DLL 不可用时为 nil → 退回 stb
 	scale : f32, // ScaleForPixelHeight(size)
 	sfnt_off : int, // sfnt 目录偏移(TTC 非 0),表定位用
 }
@@ -112,8 +113,8 @@ Font :: struct {
 	faces : [MAX_FACES]Face,
 	face_count : u32,
 	gsub : Gsub, // 主字体 GSUB 连体规则;无连体时 lookup_order 为空,ShapeLine 空转
-	antialias : u8, // 光栅化超采样倍数 1-3;相对静止,LoadFont 时一次设定
 	em_px : f32, // > 0 = 按 em 对齐加载(FontSet 的中文字面);0 = 常规按 size
+	raster_scratch : [dynamic]u8, // 单字形光栅化暂存(hinting 后位图尺寸由后端给,先出图再分配)
 	cell_width, cell_height : f32,
 	ascent : f32,
 	path : string, // 加载路径(去重键:同 path+size 复用,不重复加载)
@@ -743,16 +744,17 @@ decoMetrics :: proc(f : ^Face, cell_h : f32) -> (upos, uthick, spos, sthick : f3
 // 系统字体目录(Windows)
 SYSTEM_FONT_DIR :: "C:\\Windows\\Fonts\\"
 
-// antialias:光栅化超采样倍数(1 = 整数网格,2 = 2x2 超采样)。
-// 默认 1:oversample=2 的 subpixel 相位(-0.25)会让同一笔画在不同字形里
-// 灰度分布不同(横线粗细/明暗不一);整数光栅化所有字形一致。
+// 光栅化后端由**运行时** hinting 模式决定(freetype.odin 的 Hinting:stb / off / light / normal),
+// 不是加载期参数 —— 历史上这里有个 `antialias : u8` 参数,但它从未被读取(死旋钮),
+// 而且"超采样"这条思路实测无效:stb 本来就按精确覆盖率光栅化,真做 3× 超采样后位图只差 0.26%。
+// 观感差异来自 hinting(网格拟合),那由 FreeType 提供。
 // 输入 path_or_name:优先当作字体名去系统目录找(`${SYSTEM_FONT_DIR}name.ttf/.otf/.ttc`),
 // 找不到再当作完整路径加载。
 // 去重:同 (path, size) 直接返回已有字体(字体全局共享,不重复加载/不随窗口销毁)。
 // quiet = 失败不打印(变体猜测失败是常态,不刷日志)。
 // with_fallback = 主字体缺中文时自动附一个系统中文面(face[1])。
 // FontSet 自己带中文字体句柄,所以它传 false —— 否则同一个中文文件会被读两份。
-LoadFont :: proc(path_or_name : string, size : f32, antialias : u8 = 3, quiet := false, with_fallback := true, em_px : f32 = 0) -> (h : mem.Handle, ok : bool) {
+LoadFont :: proc(path_or_name : string, size : f32, quiet := false, with_fallback := true, em_px : f32 = 0) -> (h : mem.Handle, ok : bool) {
 	if size <= 0 {
 		return {}, false
 	}
@@ -770,7 +772,7 @@ LoadFont :: proc(path_or_name : string, size : f32, antialias : u8 = 3, quiet :=
 			return h, true
 		}
 	}
-	font := Font { antialias = max(1, min(3, antialias)) }
+	font := Font {}
 	font.slots = make([dynamic]GlyphSlot, 64) // 哈希桶,装 0.75 后翻倍
 	face, fok := faceLoad(path, size, em_px)
 	if !fok {
@@ -861,7 +863,7 @@ LoadFontVariant :: proc(base : string, size : f32, family_suffix, file_suffix : 
 		if n + 1 + len(family_suffix) <= len(buf) {
 			copy(buf[n:], " ")
 			copy(buf[n + 1:], family_suffix)
-			if h, ok := LoadFont(string(buf[:n + 1 + len(family_suffix)]), size, 3, true, true, em_px); ok {
+			if h, ok := LoadFont(string(buf[:n + 1 + len(family_suffix)]), size, true, true, em_px); ok {
 				return h
 			}
 		}
@@ -909,7 +911,7 @@ LoadFontVariant :: proc(base : string, size : f32, family_suffix, file_suffix : 
 	if vn >= len(vbuf) {
 		return {}
 	}
-	if h, ok := LoadFont(string(vbuf[:vn]), size, 3, true, true, em_px); ok {
+	if h, ok := LoadFont(string(vbuf[:vn]), size, true, true, em_px); ok {
 		return h
 	}
 	return {}
@@ -1108,6 +1110,9 @@ faceLoad :: proc(path : string, size : f32, em_px : f32 = 0) -> (Face, bool) {
 	} else {
 		face.scale = stbtt.ScaleForPixelHeight(&face.info, size)
 	}
+	// FreeType 面:按同一个实际 em 像素尺寸(scale × upem)开,保证两后端字形等大
+	em := face.scale / stbtt.ScaleForMappingEmToPixels(&face.info, 1.0)
+	face.ft, _ = ftFaceOpen(data, em)
 	return face, true
 }
 
@@ -1128,6 +1133,7 @@ faceLoadFallback :: proc(path : string, main_em_px : f32) -> (Face, bool) {
 	}
 	// ScaleForMappingEmToPixels(info, em_px) = 使 em 盒映射到 em_px 像素的 scale
 	face.scale = stbtt.ScaleForMappingEmToPixels(&face.info, main_em_px)
+	face.ft, _ = ftFaceOpen(data, main_em_px)
 	return face, true
 }
 
@@ -1138,8 +1144,10 @@ fontFree :: proc(font : ^Font) {
 		delete(slot.glyphs)
 	}
 	for i in 0 ..< int(font.face_count) {
+		ftFaceClose(font.faces[i].ft) // 先关 FreeType 面:它引用 data
 		delete(font.faces[i].data)
 	}
+	delete(font.raster_scratch)
 	delete(font.slots)
 	delete(font.atlas.pixels)
 	delete(font.path)
@@ -1278,71 +1286,133 @@ glyphFaceIndex :: proc(font_h : mem.Handle, cp : rune) -> (index : int, ok : boo
 	return 0, false
 }
 
-// 光栅化公共:1x 分辨率,stbtt 解析覆盖率抗锯齿(每像素按字形覆盖面积算灰度,
-// 无需超采样)。oversample=1:不用 subpixel prefilter,避免其相位让同一笔画
-// 在不同字形里灰度分布不同(横线粗细/明暗不一,FreeType 靠 hinting 才一致)。
-rasterCommon :: proc(font_h : mem.Handle, face : ^Face, cp : rune, gid : c.int) -> (GlyphSlot, bool) {
-	font := GetFont(font_h)
-	if font == nil {
-		return {}, false
-	}
-	scale := face.scale
+// 字形光栅盒(未裁剪)与前进宽;w/h = 0 表示空白字形(空格等)
+GlyphRaster :: struct {
+	w, h    : int,
+	x0, y0  : f32, // 位图盒相对字形原点
+	advance : f32,
+}
 
-	x0, y0, x1, y1 : c.int
-	if gid != 0 {
-		stbtt.GetGlyphBitmapBox(&face.info, gid, scale, scale, &x0, &y0, &x1, &y1)
-	} else {
-		stbtt.GetCodepointBitmapBox(&face.info, cp, scale, scale, &x0, &y0, &x1, &y1)
-	}
-	w := x1 - x0
-	h := y1 - y0
-	if w == 0 || h == 0 {
-		return {}, false // 空白字形(空格等):不入图集
-	}
+// 前进宽与 cell 度量一律取自 stb(与 FontSet 的 em 对齐、格宽公式同源),
+// 光栅化后端只负责"画出哪张位图"。
+glyphAdvance :: proc(face : ^Face, cp : rune, gid : c.int) -> f32 {
 	advance : c.int
 	if gid != 0 {
 		stbtt.GetGlyphHMetrics(&face.info, gid, &advance, nil)
 	} else {
 		stbtt.GetCodepointHMetrics(&face.info, cp, &advance, nil)
 	}
+	return f32(advance) * face.scale
+}
 
-	x, y, alloc_ok := atlasAlloc(&font.atlas, u32(w) + 2 * ATLAS_PAD, u32(h) + 2 * ATLAS_PAD)
-	if !alloc_ok {
-		atlasGrow(font_h) // 图集满 → 扩容并重放全部缓存字形
-		x, y, alloc_ok = atlasAlloc(&font.atlas, u32(w) + 2 * ATLAS_PAD, u32(h) + 2 * ATLAS_PAD)
-		if !alloc_ok {
-			return {}, false
-		}
-	}
-	// 位图直接画入图集 buffer(带 pad);oversample=1(覆盖率抗锯齿已平滑)
-	sub_x, sub_y : f32
-	row_start := int(y + ATLAS_PAD) * int(font.atlas.width) + int(x + ATLAS_PAD)
+glyphRasterInfo :: proc(face : ^Face, cp : rune, gid : c.int) -> (r : GlyphRaster, ok : bool) {
+	x0, y0, x1, y1 : c.int
 	if gid != 0 {
-		stbtt.MakeGlyphBitmapSubpixelPrefilter(&face.info, cast([^]byte)&font.atlas.pixels[row_start], w, h, c.int(font.atlas.width), scale, scale, 0, 0, 1, 1, &sub_x, &sub_y, gid)
+		stbtt.GetGlyphBitmapBox(&face.info, gid, face.scale, face.scale, &x0, &y0, &x1, &y1)
 	} else {
-		stbtt.MakeCodepointBitmapSubpixelPrefilter(&face.info, cast([^]byte)&font.atlas.pixels[row_start], w, h, c.int(font.atlas.width), scale, scale, 0, 0, true, true, &sub_x, &sub_y, cp)
+		stbtt.GetCodepointBitmapBox(&face.info, cp, face.scale, face.scale, &x0, &y0, &x1, &y1)
 	}
-	atlasUpload(&font.atlas, x, y, u32(w) + 2 * ATLAS_PAD, u32(h) + 2 * ATLAS_PAD)
+	r.w, r.h = int(x1 - x0), int(y1 - y0)
+	if r.w == 0 || r.h == 0 {
+		return {}, false
+	}
+	r.x0, r.y0, r.advance = f32(x0), f32(y0), glyphAdvance(face, cp, gid)
+	return r, true
+}
+
+// 待写入图集的字形位图(后端已光栅化,紧凑 w×h)。
+// 为什么先出位图再分配:FreeType 的 hinting 会改变位图盒尺寸(比 outline 盒宽/高 1px),
+// 若仍按 stb 的盒预先分配,写进去就会越界污染相邻字形。
+PendingGlyph :: struct {
+	grays      : []u8, // w*h;借自 font.raster_scratch(写完即失效)
+	w, h       : int,
+	xoff, yoff : f32, // 相对基线(右/下为正)
+	advance    : f32,
+}
+
+// 光栅化字形到紧凑位图。hinting != .Stb 且 FreeType 可用 → FreeType(hinting);
+// 否则 stb(无 hinting)。两条路径的 gid/cp 语义一致(见 playground/ftcheck 的 gid 对照)。
+glyphPending :: proc(font : ^Font, face : ^Face, cp : rune, gid : c.int) -> (p : PendingGlyph, ok : bool) {
+	hinting := GetHinting()
+	if hinting != .Stb && face.ft != nil {
+		fb, fok := ftRender(face.ft, gid, cp, hinting)
+		if fok {
+			resize(&font.raster_scratch, fb.w * fb.h) // 复用缓冲:不逐字形分配
+			dst := font.raster_scratch[:]
+			for r in 0 ..< fb.h {
+				// pitch 可能为负(自底向上存):那时按行倒着取
+				src_r := fb.pitch < 0 ? fb.h - 1 - r : r
+				copy(dst[r * fb.w:(r + 1) * fb.w], fb.buffer[src_r * fb.pitch:][:fb.w])
+			}
+			return PendingGlyph {
+					grays = dst,
+					w = fb.w,
+					h = fb.h,
+					xoff = f32(fb.left),
+					yoff = f32(-fb.top),
+					advance = glyphAdvance(face, cp, gid),
+				},
+				true
+		}
+		// FreeType 渲不出(空白字形/格式异常)→ 落到 stb 分支再试
+	}
+	r, rok := glyphRasterInfo(face, cp, gid)
+	if !rok {
+		return {}, false // 空白字形(空格等):不入图集
+	}
+	resize(&font.raster_scratch, r.w * r.h)
+	dst := font.raster_scratch[:]
+	sub_x, sub_y : f32
+	if gid != 0 {
+		stbtt.MakeGlyphBitmapSubpixelPrefilter(&face.info, raw_data(dst), c.int(r.w), c.int(r.h), c.int(r.w), face.scale, face.scale, 0, 0, 1, 1, &sub_x, &sub_y, gid)
+	} else {
+		stbtt.MakeCodepointBitmapSubpixelPrefilter(&face.info, raw_data(dst), c.int(r.w), c.int(r.h), c.int(r.w), face.scale, face.scale, 0, 0, true, true, &sub_x, &sub_y, cp)
+	}
+	return PendingGlyph {
+			grays = dst,
+			w = r.w,
+			h = r.h,
+			xoff = r.x0 + sub_x,
+			yoff = r.y0 + sub_y,
+			advance = r.advance,
+		},
+		true
+}
+
+// 把待写位图落进图集**已分配**位置(x, y = 含 pad 的左上角),按 cell 高度裁剪,返回槽。
+// 扩容重放(atlasGrow)与首次光栅化(rasterCommon)共用本函数 —— 重放必须重新光栅化
+// (而不是拿裁剪后的 slot.w/h 当盒),否则裁剪过的竖高字形会整体错位。
+atlasWrite :: proc(font : ^Font, p : PendingGlyph, x, y : u32) -> (GlyphSlot, bool) {
+	if p.w <= 0 || p.h <= 0 {
+		return {}, false
+	}
+	aw := int(font.atlas.width)
+	base := int(y + ATLAS_PAD) * aw + int(x + ATLAS_PAD)
+	for r in 0 ..< p.h {
+		copy(font.atlas.pixels[base + r * aw:][:p.w], p.grays[r * p.w:(r + 1) * p.w])
+	}
+	atlasUpload(&font.atlas, x, y, u32(p.w) + 2 * ATLAS_PAD, u32(p.h) + 2 * ATLAS_PAD)
 
 	// box-drawing 等超高字形裁剪到 cell 高度(防相邻行交叠/竖线列断续瑕疵):
 	// 只调 yoff/高度/UV(位图本体不动,UV 指向位图子区)。
 	// cell 相对基线:顶 = -ascent,底 = cell_height - ascent。
-	xoff_v := f32(x0) + sub_x
-	yoff_v := f32(y0) + sub_y
-	cut_top : c.int
+	xoff_v := p.xoff
+	yoff_v := p.yoff
+	w, h := p.w, p.h
+	cut_top : int
 	cell_top := -font.ascent
 	cell_bottom := font.cell_height - font.ascent
 	if yoff_v < cell_top {
-		cut := c.int(math.ceil(cell_top - yoff_v))
+		cut := int(math.ceil_f32(f32(cell_top) - yoff_v))
 		if cut >= h {
 			return {}, false // 整字形在 cell 上界之外:不画
 		}
-		yoff_v = cell_top
+		yoff_v = f32(cell_top)
 		h -= cut
 		cut_top = cut
 	}
-	if yoff_v + f32(h) > cell_bottom {
-		cut := c.int(math.ceil(yoff_v + f32(h) - cell_bottom))
+	if yoff_v + f32(h) > f32(cell_bottom) {
+		cut := int(math.ceil_f32(yoff_v + f32(h) - f32(cell_bottom)))
 		if cut >= h {
 			return {}, false
 		}
@@ -1352,12 +1422,34 @@ rasterCommon :: proc(font_h : mem.Handle, face : ^Face, cp : rune, gid : c.int) 
 	return GlyphSlot {
 		w = u16(w), h = u16(h),
 		xoff = xoff_v, yoff = yoff_v,
-		advance = f32(advance) * scale,
+		advance = p.advance,
 		u0 = f32(x + ATLAS_PAD) / f32(font.atlas.width),
 		v0 = f32(y + ATLAS_PAD + u32(cut_top)) / f32(font.atlas.height),
 		u1 = f32(x + ATLAS_PAD + u32(w)) / f32(font.atlas.width),
 		v1 = f32(y + ATLAS_PAD + u32(cut_top) + u32(h)) / f32(font.atlas.height),
 	}, true
+}
+
+// 光栅化公共:后端先出紧凑位图(FreeType hinting / stb),再按**精确尺寸**分配图集位置
+// 并写入。尺寸取自后端(不是预先算的盒)—— hinting 会改变位图盒,预分配会越界。
+rasterCommon :: proc(font_h : mem.Handle, face : ^Face, cp : rune, gid : c.int) -> (GlyphSlot, bool) {
+	font := GetFont(font_h)
+	if font == nil {
+		return {}, false
+	}
+	p, pok := glyphPending(font, face, cp, gid)
+	if !pok {
+		return {}, false // 空白字形(空格等):不入图集
+	}
+	x, y, alloc_ok := atlasAlloc(&font.atlas, u32(p.w) + 2 * ATLAS_PAD, u32(p.h) + 2 * ATLAS_PAD)
+	if !alloc_ok {
+		atlasGrow(font_h) // 图集满 → 扩容并重放全部缓存字形
+		x, y, alloc_ok = atlasAlloc(&font.atlas, u32(p.w) + 2 * ATLAS_PAD, u32(p.h) + 2 * ATLAS_PAD)
+		if !alloc_ok {
+			return {}, false
+		}
+	}
+	return atlasWrite(font, p, x, y)
 }
 
 glyphRasterize :: proc(font_h : mem.Handle, cp : rune) -> bool {
@@ -1475,22 +1567,43 @@ atlasGrow :: proc(font_h : mem.Handle) {
 			continue
 		}
 		face := &font.faces[slot.face_index]
-		x, y, ok := atlasAlloc(a, u32(slot.w) + 2 * ATLAS_PAD, u32(slot.h) + 2 * ATLAS_PAD)
+		// 必须**重新光栅化**(而不是拿裁剪后的 slot.w/h 当光栅盒):否则裁剪过的竖高字形
+		// (box-drawing 框线/实心块)会丢掉顶部行、整体错位
+		p, pok := glyphPending(font, face, slot.cp, c.int(slot.gid))
+		if !pok {
+			continue
+		}
+		x, y, ok := atlasAlloc(a, u32(p.w) + 2 * ATLAS_PAD, u32(p.h) + 2 * ATLAS_PAD)
 		if !ok {
 			break // 翻倍后仍有空间,分配失败即后续全失败
 		}
-		row_start := int(y + ATLAS_PAD) * int(a.width) + int(x + ATLAS_PAD)
-		sub_x, sub_y : f32
-		if slot.gid != 0 {
-			stbtt.MakeGlyphBitmapSubpixelPrefilter(&face.info, cast([^]byte)&a.pixels[row_start], c.int(slot.w), c.int(slot.h), c.int(a.width), face.scale, face.scale, 0, 0, 1, 1, &sub_x, &sub_y, c.int(slot.gid))
-		} else {
-			stbtt.MakeCodepointBitmapSubpixelPrefilter(&face.info, cast([^]byte)&a.pixels[row_start], c.int(slot.w), c.int(slot.h), c.int(a.width), face.scale, face.scale, 0, 0, true, true, &sub_x, &sub_y, slot.cp)
+		ns, nok := atlasWrite(font, p, x, y)
+		if !nok {
+			continue
 		}
-		slot.u0 = f32(x + ATLAS_PAD) / f32(a.width)
-		slot.v0 = f32(y + ATLAS_PAD) / f32(a.height)
-		slot.u1 = f32(x + ATLAS_PAD + u32(slot.w)) / f32(a.width)
-		slot.v1 = f32(y + ATLAS_PAD + u32(slot.h)) / f32(a.height)
-		atlasUpload(a, x, y, u32(slot.w) + 2 * ATLAS_PAD, u32(slot.h) + 2 * ATLAS_PAD)
+		ns.cp = slot.cp
+		ns.gid = slot.gid
+		ns.face_index = slot.face_index
+		slot^ = ns
 	}
 	delete(old)
+}
+
+// 让所有已加载字体的字形缓存重新光栅化(清缓存 + 复位图集分配游标)。
+// 光栅化参数变化(如运行时切 hinting)后必须调用:位图内容与尺寸都会变。
+// 旧像素留在图集里但不再被 UV 引用;纹理在上传路径按需更新,无需重建。
+InvalidateGlyphCaches :: proc() {
+	fit : mem.RcIter(MAX_FONT_SLOTS, Font) = mem.RcAll(&fonts)
+	for h in mem.nextRc(&fit) {
+		font := mem.RcGet(&fonts, h)
+		if font == nil {
+			continue
+		}
+		clear(&font.slots)
+		if len(font.slots) == 0 {
+			font.slots = make([dynamic]GlyphSlot, 64)
+		}
+		font.slot_count = 0
+		font.atlas.cur_x, font.atlas.cur_y, font.atlas.row_height = 0, 0, 0
+	}
 }
