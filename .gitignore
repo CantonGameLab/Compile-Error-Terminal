@@ -1,6 +1,11 @@
 reference/
 playground/
+.dsh/
 
 # 构建产物(不跟踪:exe 由构建产生,发布走 Releases 附件)
 *.exe
 build/
+
+# Odin -resource:<x>.rc 的中间产物,由资源编译器在 .rc 旁边生成,不会自动清理
+*.res
+
