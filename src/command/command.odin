@@ -229,7 +229,7 @@ ExecuteCommand :: proc(cmd : ParsedCommand) -> (ret : string, ok : bool) {
 			ret = fmt.aprintf("window %d  font %s %.0f  %s %dx%d  review %d  factor %.2f",
 				info.node.id, info.font_name, info.font_size,
 				info.has_session ? "session" : "no-session",
-				info.cols, info.rows, info.review_line, info.split_factor)
+				info.cols, info.rows, info.review_top, info.split_factor)
 		}
 		ok = true
 	case .FocusGet:

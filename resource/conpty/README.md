@@ -48,9 +48,23 @@ Cygwin/mintty([邮件列表](https://sourceware.org/pipermail/cygwin/2025-Septem
 启动时会往 stderr 打一行,标明用的是哪套:
 
 ```
-[conpty] 新会话使用外部 conpty.dll(OpenConsole 实现,导出名 = ConptyCreatePseudoConsole)
-[conpty] 新会话使用系统 kernel32(装箱 conhost 实现;没找到 conpty.dll)
+[conpty] 新会话使用外部 conpty.dll(宿主 OpenConsole.exe 已就位,导出名 = ConptyCreatePseudoConsole)
+[conpty] 新会话使用系统 kernel32(装箱 conhost 实现)
 ```
+
+**"dll 加载成功" ≠ "新实现生效"**(Win10 上踩过,排查方向被带偏很久):`conpty.dll` 只是壳,
+真正的宿主进程是它**自己所在目录**里的 `OpenConsole.exe`;找不到就依次退回
+`<同目录>/<arch>/OpenConsole.exe` → `%SystemRoot%\System32\conhost.exe`
+(WT 源码 `src/winconpty/winconpty.cpp:_ConsoleHostPath`),**静默**用回装箱 conhost ——
+日志写着 OpenConsole、跑的却是 conhost,于是"换了 conpty.dll 问题依旧"。
+所以现在启动时**先查宿主 exe**,不在位就打印
+
+```
+[conpty] ⚠ conpty.dll 同目录缺 OpenConsole.exe(它会静默退回装箱 conhost),已改用系统实现;两个文件必须放在一起
+```
+
+并且**不再使用这份 dll**(既然它给不出新实现,就不假装在用)。分发只有一条规则:
+两个文件**同目录、同名、一起走**。
 
 命令 `conpty on|off` 可运行时切换(**只影响新会话** —— 一个 HPCON 只能由创建它的
 那套实现 resize/close)。

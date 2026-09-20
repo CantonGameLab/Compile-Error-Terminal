@@ -596,6 +596,11 @@ vtHandleC0 :: proc(console_h : mem.Handle, b : u8) {
 	}
 }
 
+// LF/IND:光标下移**一段**(屏幕语义)。两条硬换行语义:
+//   · 光标在列 0(CR+LF 的形态)⇒ 光标落在下一段的**段首**,那里就是一条新行的起点;
+//     若该段落在现有逻辑行内部(行还有内容)⇒ 在段首拆行,把"硬换行"记进结构里。
+//   · 光标在列 > 0(裸 LF)⇒ 只下移,内容不动(xterm 的 index 语义)。
+// 内容本身永不因为 LF 被切分。
 vtLf :: proc(console_h : mem.Handle) {
 	console := GetConsole(console_h)
 	if console == nil {
@@ -606,11 +611,22 @@ vtLf :: proc(console_h : mem.Handle) {
 	if tb == nil {
 		return
 	}
-	if int(console.cursor_row) - screenBase(console, tb) < int(console.vt.scroll_bottom) {
+	hard := console.cursor_col == 0 // CR 之后的 LF = 硬换行
+	if int(console.cursor_row) < int(console.vt.scroll_bottom) {
 		console.cursor_row += 1
-		return
+	} else {
+		vtScrollUp(console_h)
 	}
-	vtScrollUp(console_h)
+	cursorSegmentNextLine(console, tb)
+	if hard && console.cursor_off != 0 {
+		// 落在现有逻辑行内部:在段首拆行(段边界 ⇒ 画面不动,只是把断点记下来)
+		if splitLineAt(tb, int(console.cursor_line), int(console.cursor_off)) > 0 {
+			console.cursor_line += 1
+			console.cursor_off = 0
+		}
+	}
+	cursorSegmentInvalidate(console)
+	tb.screen_dirty = true
 }
 
 // RI:光标上移一行;在滚动区顶则向下滚动
@@ -623,9 +639,9 @@ vtReverseIndex :: proc(console_h : mem.Handle) {
 	if tb == nil {
 		return
 	}
-	base := screenBase(console, tb)
-	if int(console.cursor_row) - base > int(console.vt.scroll_top) {
+	if int(console.cursor_row) > int(console.vt.scroll_top) {
 		console.cursor_row -= 1
+		cursorSegmentInvalidate(console)
 		return
 	}
 	vtScrollDown(console_h)
@@ -688,10 +704,6 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 	}
 	vt := &console.vt
 	tb := GetTermBuffer(console.active_term_buffer_id)
-	base := 0
-	if tb != nil {
-		base = screenBase(console, tb)
-	}
 	// 注意:wrap_pending 不能被 SGR 等 CSI 清除(xterm 语义,写满列后
 	// 改颜色再写字符仍要折行;nvim 的 eob/状态栏绘制依赖此行为)。
 	// 只有光标定位类操作才清除(见各 case)。
@@ -723,24 +735,20 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 		when VT_DEBUG { vtDbg(console_h, fmt.tprintf("CUU p0=%d", p0)) }
 		vt.wrap_pending = false
 		n := max(1, p0)
-		screen_row := int(console.cursor_row) - base
 		limit := 0
 		if vt.origin_mode {
 			limit = int(vt.scroll_top)
 		}
-		screen_row = max(limit, screen_row - n)
-		console.cursor_row = u16(base + screen_row)
+		console.cursor_row = u16(max(limit, int(console.cursor_row) - n))
 	case 'B': // CUD(origin 下限制在滚动区底)
 		when VT_DEBUG { vtDbg(console_h, fmt.tprintf("CUD p0=%d", p0)) }
 		vt.wrap_pending = false
 		n := max(1, p0)
-		screen_row := int(console.cursor_row) - base
 		limit := int(console.rows) - 1
 		if vt.origin_mode {
 			limit = int(vt.scroll_bottom)
 		}
-		screen_row = min(limit, screen_row + n)
-		console.cursor_row = u16(base + screen_row)
+		console.cursor_row = u16(min(limit, int(console.cursor_row) + n))
 	case 'C': // CUF(右移 n 列;纯算术,光标可停在宽字续列上 —— 同 xterm)
 		vt.wrap_pending = false
 		n := max(1, p0)
@@ -758,9 +766,9 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 		}
 		console.cursor_col = u16(c)
 	case 'H', 'f': // CUP(1-based;origin 下相对滚动区顶)
-		when VT_DEBUG { vtDbg(console_h, fmt.tprintf("CUP p0=%d p1=%d base=%d", p0, p1, base)) }
+		when VT_DEBUG { vtDbg(console_h, fmt.tprintf("CUP p0=%d p1=%d", p0, p1)) }
 		vt.wrap_pending = false
-		row := base + vtTargetRow(console, p0)
+		row := vtTargetRow(console, p0)
 		col := clamp(p1 - 1, 0, int(console.cols) - 1)
 		console.cursor_row, console.cursor_col = u16(row), u16(col)
 		when VT_DEBUG { vtDbg(console_h, fmt.tprintf("CUP -> %d,%d", row, col)) }
@@ -793,7 +801,7 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 		vt.scroll_top, vt.scroll_bottom = u16(min(top, bottom)), u16(max(top, bottom))
 		if vt.origin_mode {
 			vt.wrap_pending = false
-			console.cursor_row = u16(base + int(vt.scroll_top))
+			console.cursor_row = u16(vt.scroll_top)
 			console.cursor_col = 0
 		}
 	case 's': // 存光标
@@ -866,7 +874,7 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 		vtDeleteLines(console_h, max(1, p0))
 	case 'd': // VPA 行绝对定位(origin 下相对滚动区)
 		vt.wrap_pending = false
-		console.cursor_row = u16(base + vtTargetRow(console, p0))
+		console.cursor_row = u16(vtTargetRow(console, p0))
 	case '`': // HPA 列绝对定位
 		vt.wrap_pending = false
 		console.cursor_col = u16(clamp(p0 - 1, 0, int(console.cols) - 1))
@@ -876,7 +884,7 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 		if vt.origin_mode {
 			limit = int(vt.scroll_bottom)
 		}
-		console.cursor_row = u16(min(base + limit, int(console.cursor_row) + max(1, p0)))
+		console.cursor_row = u16(min(limit, int(console.cursor_row) + max(1, p0)))
 	case 'a': // HPR 列相对右移
 		vt.wrap_pending = false
 		console.cursor_col = u16(min(int(console.cols) - 1, int(console.cursor_col) + max(1, p0)))
@@ -907,15 +915,10 @@ vtSetMode :: proc(console_h : mem.Handle, set : bool) {
 		ct.Resize(console.conpty_handle, console.cols, console.rows)
 	case 6: // DECOM origin mode:置位光标移到滚动区 home,复位移到左上
 		vt.origin_mode = set
-		tb := GetTermBuffer(console.active_term_buffer_id)
-		b := 0
-		if tb != nil {
-			b = screenBase(console, tb)
-		}
 		if set {
-			console.cursor_row = u16(b + int(vt.scroll_top))
+			console.cursor_row = u16(vt.scroll_top)
 		} else {
-			console.cursor_row = u16(b)
+			console.cursor_row = 0
 		}
 		console.cursor_col = 0
 		vt.wrap_pending = false
@@ -1065,14 +1068,9 @@ vtSgr :: proc(console_h : mem.Handle) {
 	vt.style = style
 }
 
-// 光标屏幕位置(0-based):物理行 - 可视区顶部(历史 + review 滚动)
+// 光标屏幕位置(0-based):光标本身就是屏幕坐标(唯一真值,不再换算)
 cursorScreenPos :: proc(console : ^Console) -> (row, col : int) {
-	tb := GetTermBuffer(console.active_term_buffer_id)
-	top := 0
-	if tb != nil {
-		top = viewportTop(console, tb)
-	}
-	return int(console.cursor_row) - top, int(console.cursor_col)
+	return int(console.cursor_row), int(console.cursor_col)
 }
 
 // ESC[row;colR 应答光标位置(程序阻塞等这个);报屏幕坐标,不是物理行

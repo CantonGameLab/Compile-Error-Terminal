@@ -88,8 +88,7 @@ ProcessMouse :: proc() {
 			// 连击:双击词选 / 三击行选;否则普通(替换旧选区)
 			mtr := fnt.GetMetrics(console.font_set.main_font)
 			tb := GetTermBuffer(console.active_term_buffer_id)
-			top, _ := ConsoleViewportTop(console_h)
-			line, col := screenToBuffer(console, tb, top, mtr, m.x, m.y)
+			line, col := screenToBuffer(console, tb, mtr, m.x, m.y)
 			switch clickChain(console.active_term_buffer_id, line, col) {
 			case 2:
 				SelectionSetWord(console.active_term_buffer_id, line, col)

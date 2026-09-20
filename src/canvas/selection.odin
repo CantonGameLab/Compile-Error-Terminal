@@ -130,10 +130,12 @@ hostConsoleFor :: proc(buffer_h : mem.Handle) -> mem.Handle {
 // 鼠标建立(路由调用):命中窗口 → 屏幕行列 → buffer 坐标
 // ---------------------------------------------------------------------------
 // 屏幕 → buffer 网格(clamp 到网格边界)。规范化在 selectionNormalize(方向定后)。
-screenToBuffer :: proc(console : ^Console, tb : ^TermBuffer, top : int, m : fnt.Metrics, x, y : f32) -> (line, col : int) {
+// 列是**逻辑列**(段首 + 段内列):逻辑行可以比屏幕宽,选区坐标跟内容走,不跟屏幕走。
+screenToBuffer :: proc(console : ^Console, tb : ^TermBuffer, m : fnt.Metrics, x, y : f32) -> (line, col : int) {
 	row := clamp(int((y - console.origin_y) / m.cell_height), 0, int(console.rows) - 1)
 	col = clamp(int((x - console.origin_x) / m.cell_width), 0, int(console.cols) - 1)
-	return top + row, col
+	line_idx, off, _ := screenSegmentAt(console, tb, row)
+	return line_idx, off + col
 }
 
 // 宽字符边界规范化(方向感知):起点在续列 → 左移入字首;终点在续列 → 右移包含整字。
@@ -191,8 +193,7 @@ selectionBegin :: proc(node_h : mem.Handle, x, y : f32) -> bool {
 	if m.cell_width <= 0 || m.cell_height <= 0 {
 		return false
 	}
-	top, _ := ConsoleViewportTop(console_h)
-	line, col := screenToBuffer(console, tb, top, m, x, y)
+	line, col := screenToBuffer(console, tb, m, x, y)
 	selection = Selection {
 		active = true,
 		buffer_h = console.active_term_buffer_id,
@@ -217,8 +218,7 @@ selectionUpdate :: proc(x, y : f32) -> bool {
 	if m.cell_width <= 0 || m.cell_height <= 0 {
 		return false
 	}
-	top, _ := ConsoleViewportTop(selection.host)
-	line, col := screenToBuffer(console, tb, top, m, x, y)
+	line, col := screenToBuffer(console, tb, m, x, y)
 	selection.cur = SelectionPoint { line = line, col = col }
 	selectionNormalize()
 	return true
@@ -290,10 +290,9 @@ ExtractSelectionText :: proc() -> []u8 {
 		}
 		line := &tb.lines[line_idx]
 		if line_idx > lo.line {
-			// 软换行:本行由上一行折行而来 → 无分隔符(拼接)
-			if !line.wrapped {
-				strings.write_string(&b, "\r\n")
-			}
+			// 逻辑行存储后:一条 buffer 行就是一条真实文本行,行间一律换行 ——
+			// 软折行不再产生新行(它只是同一行占多个屏幕段),所以这里不需要任何标记判断。
+			strings.write_string(&b, "\r\n")
 		}
 		s := 0
 		e := cols

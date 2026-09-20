@@ -21,7 +21,7 @@ theme gruvbox-dark
 # 默认字体方案:主字体定字符格,中文字体适配它(一个全角汉字 = 2 格)。
 # 第 4 个参数 = 中文字体(英文族名或 .ttc 路径);留空 = 用系统候选(雅黑→黑体→宋体→等线)。
 # 注意中文族名解析不了(字体表里是英文名),写 "Microsoft JhengHei"(微软正黑)。
-default-launch "C:\msys64\msys2_shell.cmd -ucrt64 -defterm -here -full-path -no-start" "Hack Nerd Font" 25 "SimSun"
+default-launch "C:\msys64\msys2_shell.cmd -ucrt64 -defterm -here -full-path -no-start" "Hack Nerd Font" 25 "Microsoft JhengHei"
 # 已存在的窗格要换字体集,用 fontset(缺省作用于焦点窗格;末尾 @id 指定目标):
 # fontset "Hack Nerd Font" "Microsoft JhengHei" 25
 # fontset "Hack Nerd Font" "" 25

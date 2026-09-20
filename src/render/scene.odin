@@ -58,8 +58,13 @@ caret :: proc(win : ^s3.Window, p : ^cv.Page) {
 		_ = s3.SetTextInputArea(win, nil, 0)
 		return
 	}
-	visible_top, _ := cv.ConsoleViewportTop(p.focused)
-	screen_row := int(console.cursor_row) - visible_top
+	// 光标屏幕行 = cursor_row 本身(屏幕坐标是 VT 的真值);review 回看时不在这一屏上
+	_, in_review := cv.ConsoleViewportTop(p.focused)
+	if in_review {
+		_ = s3.SetTextInputArea(win, nil, 0)
+		return
+	}
+	screen_row := int(console.cursor_row)
 	if screen_row < 0 || screen_row >= int(console.rows) {
 		_ = s3.SetTextInputArea(win, nil, 0) // 光标在视口外(review 模式翻页时)
 		return
@@ -407,18 +412,18 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 	if tb == nil {
 		return
 	}
-	visible_top, _ := cv.ConsoleViewportTop(console_h)
-
 	// 行连体 shaping 缓冲:模块级复用(零分配),逐行 resize 复用
 	for r in 0 ..< int(console.rows) {
-		line_idx := visible_top + r
-		if line_idx >= len(tb.lines) {
+		// 屏幕行 → **段**(内容行 + 段首列):阶段1 一逻辑行 = 一屏幕行 ⇒ 段首恒 0
+		line_idx, seg := cv.ConsoleScreenSegment(console_h, r)
+		if line_idx < 0 || line_idx >= len(tb.lines) {
 			break
 		}
 		line := &tb.lines[line_idx]
+		cells := line.cells[min(seg, len(line.cells)):] // 段视图:下面的索引都相对段首
 		// 选区渲染开关:当前 console 持有的 buffer = 被选 buffer(只读比较)
 		sel_console := console.active_term_buffer_id.id != 0 && console.active_term_buffer_id == cv.SelectionBuffer()
-		col_limit := min(int(console.cols), len(line.cells))
+		col_limit := min(int(console.cols), len(cells))
 		if col_limit == 0 {
 			continue
 		}
@@ -431,14 +436,14 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 			// 第 1 趟:只画背景(打底/cell 底色 → 背景批);选区覆盖在 cell 底色之上。
 			// 宽字符续列不单独画:首格按宽 2 一次画(底色与选区列对齐)。
 			for c in 0 ..< col_limit {
-				cell := line.cells[c]
+				cell := cells[c]
 				w := 1
 				if cell.cp != 0 && cell.wide {
 					w = 2
 				} else if cell.cp == 0 && cell.wide {
 					continue
 				}
-				if sel_console && cv.CellSelected(line_idx, c, w, int(console.cols)) {
+				if sel_console && cv.CellSelected(line_idx, seg + c, w, int(console.cols)) {
 					cx := console.origin_x + f32(c) * m.cell_width
 					cy := console.origin_y + f32(r) * m.cell_height
 					DrawRectBg(cx, cy, m.cell_width * f32(w), m.cell_height, theme.selection_bg)
@@ -459,7 +464,7 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 		resize(&draw_shaped, col_limit)
 		resize(&draw_orig, col_limit)
 		for c in 0 ..< col_limit {
-			g := fnt.GlyphIndex(console.font_set.main_font, line.cells[c].cp)
+			g := fnt.GlyphIndex(console.font_set.main_font, cells[c].cp)
 			draw_orig[c] = g
 			draw_shaped[c] = g
 		}
@@ -474,7 +479,7 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 		cn_fh : mem.Handle // 同档中文面(主面没有字形时用它画)
 		bs, isyn : bool
 		for c in 0 ..< draw_limit {
-			cell := line.cells[c]
+			cell := cells[c]
 			if cell.cp == 0 {
 				continue // 空白格/宽字符续列:无字形
 			}
@@ -497,7 +502,7 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 			if cell.reverse {
 				fg = cv.ResolveColor(cell.bg, theme.bg)
 			}
-			if sel_console && cv.CellSelected(line_idx, c, 1, int(console.cols)) {
+			if sel_console && cv.CellSelected(line_idx, seg + c, 1, int(console.cols)) {
 				fg = theme.selection_fg // 选中字形换选区前景(背景已在 1 趟覆盖)
 			}
 			gid := draw_shaped[c]
@@ -513,14 +518,16 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 			drawCellGlyph(src_fh, cell.cp, gid, draw_orig[c], cx, cy + m.ascent, fg, bs, isyn, src_fh != console.font_set.main_font)
 		}
 		// 装饰线(下划线/删除线/上划线):样式 run 合并,画在字形之上
-		drawDecoLine(line, col_limit, r, console, m, theme.fg)
+		drawDecoLine(cells, col_limit, r, console, m, theme.fg)
 	}
 
 	// 光标(DECSCUSR):0/1 块 2 块(常亮) 3/4 下划线 5/6 竖线。
 	// 闪烁 = 硬相位亮灭(无渐变,亮灭各半);输入窗口常亮;位置 = 真源格(无动画)。
 	// 块状先画块再用底色重绘字形,条形不遮字形无需重绘。
-	if !bg && console.vt.cursor_visible {
-		cr := int(console.cursor_row) - visible_top
+	// 光标本身是屏幕坐标 ⇒ 直接用 cursor_row;review(回看历史)时光标不在这一屏上,不画。
+	_, in_review := cv.ConsoleViewportTop(console_h)
+	if !bg && console.vt.cursor_visible && !in_review {
+		cr := int(console.cursor_row)
 		if cr >= 0 && cr < int(console.rows) {
 			cx := console.origin_x + f32(console.cursor_col) * m.cell_width
 			cy := console.origin_y + f32(cr) * m.cell_height
@@ -535,32 +542,30 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 					DrawRect(cx, cy, 1.0, m.cell_height, theme.cursor)
 				case: // 0/1/2:块;停在宽字符首格时画 2 格宽(覆盖续列)
 					cw := m.cell_width
-					line_idx := visible_top + cr
-					if line_idx < len(tb.lines) {
-						line := &tb.lines[line_idx]
-						if int(console.cursor_col) < len(line.cells) {
-							cell := line.cells[int(console.cursor_col)]
-							if cell.cp != 0 && cell.wide {
+					line_idx, seg := cv.ConsoleScreenSegment(console_h, cr)
+					cell_hit : cv.Cell
+					has_cell := false
+					if line_idx >= 0 && line_idx < len(tb.lines) {
+						cells := tb.lines[line_idx].cells
+						at := seg + int(console.cursor_col) // 段首 + 段内列
+						if at < len(cells) {
+							cell_hit = cells[at]
+							has_cell = true
+							if cell_hit.cp != 0 && cell_hit.wide {
 								cw = m.cell_width * 2
 							}
 						}
 					}
 					DrawRect(cx, cy, cw, m.cell_height, theme.cursor)
-					if line_idx < len(tb.lines) {
-						line := &tb.lines[line_idx]
-						if int(console.cursor_col) < len(line.cells) {
-							cell := line.cells[int(console.cursor_col)]
-							if cell.cp != 0 {
-								// 粗体字符同样双描重绘(否则光标块下残留 1px 粗体边)。
-								// 字形分工同字形趟:主面没有这个字形(汉字)→ 用中文面,
-								// 否则光标块下会缺字。
-								cur_fh := console.font_set.main_font
-								if fnt.GlyphIndex(cur_fh, cell.cp) == 0 && console.font_set.cn_font.id != 0 {
-									cur_fh = console.font_set.cn_font
-								}
-								drawCellGlyph(cur_fh, cell.cp, 0, 0, cx, cy + m.ascent, theme.bg, false, false, false)
-							}
+					if has_cell && cell_hit.cp != 0 {
+						// 粗体字符同样双描重绘(否则光标块下残留 1px 粗体边)。
+						// 字形分工同字形趟:主面没有这个字形(汉字)→ 用中文面,
+						// 否则光标块下会缺字。
+						cur_fh := console.font_set.main_font
+						if fnt.GlyphIndex(cur_fh, cell_hit.cp) == 0 && console.font_set.cn_font.id != 0 {
+							cur_fh = console.font_set.cn_font
 						}
+						drawCellGlyph(cur_fh, cell_hit.cp, 0, 0, cx, cy + m.ascent, theme.bg, false, false, false)
 					}
 				}
 			}
@@ -591,7 +596,7 @@ drawCellGlyph :: proc(font_h : mem.Handle, cp : rune, gid, orig_gid : u16, x, y 
 // 装饰线(下划线/删除线/上划线):样式 run 合并画线(跨 cell 连续不断),
 // 颜色 = span 前景色(渲染期解析);线位置/粗细取自字体 metrics(缺省兜底)。
 // 编码:dec = underline(0..2)| crossed<<2 | overline<<3
-drawDecoLine :: proc(line : ^cv.Line, col_limit : int, row : int, console : ^cv.Console, m : fnt.Metrics, theme_fg : u32) {
+drawDecoLine :: proc(cells : []cv.Cell, col_limit : int, row : int, console : ^cv.Console, m : fnt.Metrics, theme_fg : u32) {
 	if col_limit <= 0 {
 		return
 	}
@@ -599,7 +604,7 @@ drawDecoLine :: proc(line : ^cv.Line, col_limit : int, row : int, console : ^cv.
 	start := 0
 	color := u32(0)
 	have := false
-	flush :: proc(l : ^cv.Line, s, e : int, row : int, console : ^cv.Console, m : fnt.Metrics, dec : int, color : u32) {
+	flush :: proc(s, e : int, row : int, console : ^cv.Console, m : fnt.Metrics, dec : int, color : u32) {
 		if s >= e || dec == 0 {
 			return
 		}
@@ -625,7 +630,7 @@ drawDecoLine :: proc(line : ^cv.Line, col_limit : int, row : int, console : ^cv.
 		}
 	}
 	for c in 0 ..< col_limit {
-		cell := &line.cells[c]
+		cell := &cells[c]
 		d := int(cell.underline)
 		if cell.crossed {
 			d |= 2 << 2
@@ -639,12 +644,12 @@ drawDecoLine :: proc(line : ^cv.Line, col_limit : int, row : int, console : ^cv.
 			continue
 		}
 		if d != dec || fg != color {
-			flush(line, start, c, row, console, m, dec, color)
+			flush(start, c, row, console, m, dec, color)
 			dec, start, color = d, c, fg
 		}
 	}
 	if have {
-		flush(line, start, col_limit, row, console, m, dec, color)
+		flush(start, col_limit, row, console, m, dec, color)
 	}
 }
 

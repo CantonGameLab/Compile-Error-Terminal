@@ -100,6 +100,9 @@ CETerm-0.1.0-win64.zip
 - **架构**:PE Machine == `0x8664`。
 - **资源清单**:`tools/release-manifest.txt` 逐行列出包内必须存在的相对路径,缺一个即失败。
   比"我记得要拷 shader/"可靠。
+  **必须包含 `resource/conpty/x64/OpenConsole.exe`**:`conpty.dll` 只是壳,缺宿主 exe 时会**静默**
+  用回装箱 conhost(实测踩过,见 `resource/conpty/README.md`)—— 少拷这一个文件,包没有任何报错,
+  只是 ConPTY 新实现从来没生效。
 
 这些校验实现为**独立脚本 `tools/verify_release.ps1`**,由 `build.ps1` 与 CI **共用同一份** —— 避免本地过、CI 不过。
 
@@ -160,6 +163,7 @@ runner 上 OpenGL 4.4 core 不可靠。一个会随机假失败的 CI,唯一的�
 | | 本地 `build.ps1` | CI |
 |---|---|---|
 | 能不能起来 | ✅ 真启动,跑到 font+conpty | ❌ 不跑 |
+| ConPTY 宿主在位 | ✅ 日志须出现「宿主 OpenConsole.exe 已就位」;出现 `⚠` = 载荷没带全 | ❌ |
 | PE 头/导入表/清单/哈希 | ✅ | ✅ |
 | 干净机器上能不能用 | ❌ | ❌(都做不到,靠人工在 VM 验一次) |
 

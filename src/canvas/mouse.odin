@@ -121,8 +121,8 @@ updateCursor :: proc() {
 				if m.cell_width > 0 && m.cell_height > 0 && tb != nil {
 					col := clamp(int((inp.Mouse.x - console.origin_x) / m.cell_width), 0, int(console.cols) - 1)
 					row := clamp(int((inp.Mouse.y - console.origin_y) / m.cell_height), 0, int(console.rows) - 1)
-					top, _ := ConsoleViewportTop(NodeConsoleId(n))
-					line := top + row
+					// 屏幕行 → 缓冲行:走屏幕行表(阶段1 与 top + row 逐位等价)
+					line := screenLineAt(console, tb, row)
 					w := 1
 					if line >= 0 && line < len(tb.lines) && col < len(tb.lines[line].cells) {
 						cell := tb.lines[line].cells[col]

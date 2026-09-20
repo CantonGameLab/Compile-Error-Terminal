@@ -678,16 +678,18 @@ ConsoleScroll :: proc(delta : int, id : mem.Handle = {}) -> bool {
 	if tb == nil {
 		return false
 	}
-	cur := int(tb.review_line) - 1
-	if tb.review_line == 0 {
-		cur = len(tb.lines) - 1 // 普通模式起点 = 最新底行
-	}
-	nl := clamp(cur + delta, 0, len(tb.lines) - 1)
-	if nl >= len(tb.lines) - 1 {
-		tb.review_line = 0 // 滚回最新 = 普通模式
+	// 锚点是**顶行**编码 (行, 段):delta 按**屏幕段**走(一行占几段随 cols 变,
+	// 所以历史回看必须按屏幕行走,不能按行跳)
+	line, off := viewportAnchor(console, tb)
+	nline, noff := ViewportAnchorShift(tb, max(1, int(console.cols)), line, off, delta)
+	live_line, live_off := viewportAnchorLive(console, tb)
+	if nline > live_line || (nline == live_line && noff >= live_off) {
+		tb.review_top, tb.review_off = 0, 0 // 到最新 = 普通模式
 	} else {
-		tb.review_line = u32(nl + 1)
+		tb.review_top = u32(nline + 1)
+		tb.review_off = u32(noff)
 	}
+	tb.screen_dirty = true // 锚点变了 ⇒ 屏幕行表必须重建(表由写路径就地置失效)
 	return true
 }
 
@@ -710,7 +712,8 @@ exitReview :: proc(console : ^Console) -> bool {
 	if tb == nil {
 		return false
 	}
-	tb.review_line = 0
+	tb.review_top, tb.review_off = 0, 0
+	tb.screen_dirty = true // 锚点变了 ⇒ 屏幕行表重建
 	return true
 }
 
@@ -771,7 +774,7 @@ ConsoleCount :: proc() -> int {
 
 // 取 id(或焦点)窗格**面板**第 n 行(n 从面板最上面数,0-based)的文本。
 // "面板" = 当前视口:普通模式贴底(顶行 = 缓冲区倒数第 rows 行),review 模式锚定
-// review_line。视口公式只有一处(console.odin 的 viewportTop),这里复用它的公开入口
+// review_line。屏幕行 → 缓冲行的换算只有一处(console.odin 的屏幕行表 screenLineAt)
 // —— 不要在这里另算一遍。
 // 文本写进 buf(借用,调用期间有效);末尾空白已裁。
 // false = 无窗格/无会话/超出面板行数(面板只有 console.rows 行)。
@@ -782,8 +785,8 @@ ConsoleLineText :: proc(n : int, buf : []u8, id : mem.Handle = {}) -> (text : st
 	if console == nil || n < 0 || n >= int(console.rows) {
 		return "", false
 	}
-	top, _ := ConsoleViewportTop(console_h)
-	return TermBufferLineText(console.active_term_buffer_id, top + n, buf)
+	tb := GetTermBuffer(console.active_term_buffer_id)
+	return TermBufferLineText(console.active_term_buffer_id, screenLineAt(console, tb, n), buf)
 }
 
 // 窗格信息快照(派生量按值返回,同 fnt.GetMetrics 的做法;font_name 借用 console
@@ -798,7 +801,7 @@ ConsoleInfo :: struct {
 	italic_face : bool,
 	bi_face : bool,
 	rows, cols : u16,
-	review_line : u32, // 0 = 普通模式
+	review_top : u32, // 0 = 普通模式;n (1..) = 回看窗口顶行的行号 + 1
 	split_factor : f32, // 父节点比例(根窗 = 0)
 }
 
@@ -830,7 +833,7 @@ GetConsoleInfo :: proc(id : mem.Handle = {}) -> (info : ConsoleInfo, ok : bool) 
 	}
 	info.rows, info.cols = console.rows, console.cols
 	if tb := GetTermBuffer(console.active_term_buffer_id); tb != nil {
-		info.review_line = tb.review_line
+		info.review_top = tb.review_top
 	}
 	return info, true
 }

@@ -59,7 +59,7 @@ Window(leaf 节点)= 一个 App = 一个 ConPTY 子进程
 |---|---|---|
 | `canvas.odin` | —(模块入口) | 每帧主入口 `Update`:① 树遍历(布局 + 消费各会话输出,Resize 联动 ConPTY)② 会话轮询 ③ 命令信道回读 ④ 选区自愈 ⑤ 鼠标路由 ⑥ 未消费文本路由 |
 | `tree.odin` | `WindowTreeNode` / `Transform` / `SplitType` / `FocusDirection` | 树结构操作(分裂/摘除/挂载/重算/焦点/命中)+ `ConsoleUpdateTree` 编排;leaf 节点**直接持 `console_id`**(无 Window 中间层)。**焦点是树状态**;`FocusNeighbor` 方向导航;`nodeAtPoint` / `SplitFrameHit` 命中 |
-| `buffer.odin` | `Cell` / `CellStyle` / `Line` / `TermBuffer` | 内容层生命周期 + **全部写路径**(落格/折行/滚动/擦除/插入/裁剪)+ `review_line` 真值 |
+| `buffer.odin` | `Cell` / `CellStyle` / `Line` / `TermBuffer` / **`ScreenRow`(屏幕行表)** | 内容层生命周期 + **全部写路径**(落格/折行/滚动/擦除/插入/裁剪)+ `review_line` 真值 + **屏幕坐标↔缓冲坐标换算**(表与唯一重算入口 `screenEnsure`) |
 | `console.odin` | `Console`(持有 `Parser` / `VtState`) | 窗格内容实体:视口生命周期 + 布局(居中 / `viewportTop` / review 锚定)+ **字体集**(主/粗/斜/粗斜 + 输入名,引用计数持有者)+ 会话(conpty / 缓冲)+ `ensureConsole` / `ConsoleFontVariant` |
 | `vtparse.odin` | `Parser` | 移植的 DEC 兼容状态机(Paul Williams / Joshua Haberman,public domain)+ 两处补充(UTF-8 直通;OSC 也接受 BEL 终止)。**纯草稿纸**:不存句柄、无回调、无上下文;`Parse` 是唯一入口 |
 | `vt.odin` | `VtState` | VT 语法语义分派(ESC/CSI/SGR/DEC 模式)+ 应答(DSR/DA/DECRQM 写回) |
@@ -106,6 +106,12 @@ Window(leaf 节点)= 一个 App = 一个 ConPTY 子进程
 缺失时各自退回系统实现 / stb 光栅化,只打一行 stderr。FreeType 的两个文件必须同目录,且加载方式有坑
 (`LoadLibraryExW` 的 ALTERED / `LOAD_LIBRARY_SEARCH_*` 标志在本机被代码完整性策略拒掉,报 15700 / 577),
 详见 `resource/freetype/README.md` 与 `playground/ftdll/`。
+
+`conpty/x64/` 同理必须**两个文件一起分发**:`conpty.dll` 只是壳,真正的宿主进程是它**自己所在目录**里的
+`OpenConsole.exe`(找不到就依次退回 `<同目录>/<arch>/OpenConsole.exe` → `%SystemRoot%\System32\conhost.exe`,
+见 WT `src/winconpty/winconpty.cpp:_ConsoleHostPath`)。缺宿主 exe 时 dll **静默**用回装箱 conhost ——
+"dll 加载成功"≠"新实现生效",Win10 上曾因此长时间误判(日志说 OpenConsole、实际跑 conhost)。
+所以 `initConptyApi` 现在**先查宿主 exe**:不在位就当这份 dll 不可用(回系统实现)并打一行 `⚠`。
 
 ## 4. 程序状态(数据结构设计)
 
@@ -414,15 +420,40 @@ UpdateConsole(h)                                   // 拉 conpty 环形缓冲喂
 ConsoleFeed(h, data)                               // 注入字节(工具自绘 / 测试 / 指令回显)
 ConsoleSetCursor(h, row, col) -> bool
 ConsoleViewportTop(h) -> (top, in_review)          // 视口顶行(渲染/应答共用入口)
+ConsoleScreenLine(h, r) -> int                     // 屏幕第 r 行 → 缓冲行(-1 = 越界)
+ConsoleScreenRow(h, line) -> int                   // 缓冲行 → 屏幕第 r 行(-1 = 不在屏上)
 ConsoleActivateTermBuffer(h, buffer_h) / ConsoleAttachTermBuffer(h, buffer_h)
 CreateTermBuffer(...) / DestroyTermBuffer(h) / GetTermBuffer(h)
 ```
 
-**历史滚动数据模型(单真值,绝对锚定)**:`TermBuffer.review_line`
-- `0` = 普通模式(实时跟随,底行 = 最新行,新输出自动贴底)
-- `n (1..)` = review 模式,值 = 屏幕底行物理索引 + 1;**新输出到达时不动**(视口内容稳定),trim 裁剪头行时平移补偿,resize 按"顶行不变"重排
-- 滚回最新(n 到达 len)→ 置 0(普通);与"底行 = 0"的哨兵冲突用 +1 编码避开
-- 视口顶行 = `viewportTop(console, tb)`(唯一公式,渲染/光标应答共用)
+- **历史滚动数据模型(单真值,顶行锚定)**:`TermBuffer.review_top` / `review_off`
+  - `review_top = 0` = 活窗口(贴底跟随,窗口顶段由 `viewportAnchorLive` 从内容尾部回退 `rows` 段推出)
+  - `review_top = n (1..)` = review,窗口**顶行** = `lines[n-1]` 的第 `review_off` 段起 —— **内容坐标**,resize/重排天然稳定
+  - 为什么不用底行编码:底行每次都要拿 `rows` 反推顶行,而"一行占几段"随 `cols` 变,段模型下反推不成立
+  - 平移原语:`ViewportAnchorShift(tb, cols, line, off, delta)` 按**屏幕段**前后走(`ConsoleScroll` 用它;越界停在内容首/末);滚到活窗口顶 ⇒ `review_top = 0` 回最新
+  - 推导唯一入口:`viewportAnchor(console, tb)`(review 用锚点,否则活窗口);渲染/应答/resize/裁剪共用
+
+**屏幕行表(屏幕坐标 ↔ 缓冲坐标的唯一换算入口)**:`TermBuffer.screen` —— `rows` 项的 `ScreenRow{line, offset}`,由 `screenEnsure(console, tb)` 建/重算;读侧(渲染 / 选区 / 鼠标 / CPR / IME / `ConsoleLineText`)一律走 `screenLineAt` / `screenRowFor`,跨包入口 `ConsoleScreenLine` / **`ConsoleScreenSegment`**(返回 `(line, offset)`,渲染按段画)/ `ConsoleScreenRow`,**不许再出现 `top + r` 这种散落算术**。
+- **光标本身就是屏幕坐标**(`Console.cursor_row/col`,VT 状态的地址空间):行 0..rows-1、列 0..cols-1。内容行由写入路径换算(`screenBase + cursor_row`,阶段2 换成查表拿 `(line, offset)`);因此 `CUU/CUD/CUP/VPA/DECSTBM/DECOM/IND/RI/DSR` 全部退化成纯屏幕算术,不再做 `± base` 的来回换算。
+- **写入路径用算术、读侧用表**:表只服务读侧 —— 否则每落一格就要重建一次 `rows` 项。
+- **表归 buffer(内容层)**:表的形状由内容长度决定(阶段2 起一条逻辑行可占多个屏幕行),失效源就是 buffer 的写路径 ⇒ 就地失效;交替屏各持一张表 ⇒ **切页零失效逻辑**。建表仍要"屏幕多高",那是窗格几何 ⇒ 入口签名 `screenEnsure(console, tb)`:参数取几何,状态存 tb。
+- **失效判据 = 输入快照比较**(`screen_top` / `screen_rows`):阶段1 表值只由这两项决定,所以缓冲写路径里**不撒** dirty 标志 —— 比较不中即重建,漏置标志也不可能读到陈旧表(阶段2 写入会改变内容长度,那时判据换成内容版本、由写路径就地置失效)。
+- **阶段1(已落地,行为逐位不变)**:一逻辑行 = 一屏幕行 ⇒ `offset` 恒 0、表顶 = `viewportTop`,与旧的 `top + r` 完全等价(探针 `playground/screenmapcheck/` **266 项断言**对拍,含"主屏停在 review 时切交替屏,两表互不污染")。
+- **阶段2(已落地,逻辑行 + 屏幕段)**:
+  - 内容:`Line` = **逻辑行**(只有硬换行才开新行,长度可远超 cols);`wrapped` 标记**已删除** —— 软折行 = 同一行、硬换行 = 不同行,结构自己说明,段划分由 `SegmentLen`/`LineSegments`/`SegmentStart` 从内容**派生**(宽字对不跨段)。
+  - 内容长度:`LineExtent` = 末尾空白之外的正文长度(`lineContent` 视图)。段数/锚点/推进一律按它算 —— 否则 EL/ED 补齐的空白会被当成内容(1 列下 "abc"+77 空白 = 80 段,窗口锚到行尾空白)。
+  - 写入热路径:**光标段缓存** `Console.cursor_line/cursor_off/cursor_seg_ok/cursor_seg_row`。软折行用 `cursorSegmentNextSegment`(留在同一行,off += 段长,O(1));LF 用 `cursorSegmentNextLine`(本行走完才换行);缓存靠"屏幕行号变了就作废"自动覆盖所有光标跳转,不必在每个 VT 分支里撒失效。
+  - 硬换行:`LF` = 下移一段(内容不动);**列 0 上的 LF(= CR+LF)** 若落在逻辑行内部,按**段边界**拆行(`splitLineAt`)把硬断点记进结构 —— 段边界保证画面不动。
+  - 段内操作:EL/ECH/ICH/DCH 只在 `[off, off+cols)` 内动;`sanitizeWidePairs(line, from, to)` 段口径。
+  - 屏幕级操作:ED 逐屏幕行取段擦(`clearScreenRow`);IL/DL/SU/SD 先 `splitRowsInRegion` 把滚动区内每个屏幕行拆成一条行(长行可按段拆,画面不变),再做行级搬移。
+  - 失效:`screen_dirty` 取代快照比较(写路径/几何/review/裁剪/清空就地置位);`screenEnsure` 另加 `len(screen) == rows` 兜住零值初始态。
+  - 选区:`screenToBuffer` 返回**逻辑列**(段首 + 段内列);复制按逻辑行,每条行之间就是换行(不再靠 `wrapped` 拼接)。
+  - 历史视口:锚点换成**顶行 + 段**(`review_top`/`review_off`),`ViewportAnchorShift` 按屏幕段平移,`ConsoleScroll` 按屏幕行走(不再按行跳);`applyConsoleSize` 不再重定锚点(只在 `cols` 变时把 `off` 吸附到新的段边界)。
+  - 验收:`playground/reflowcheck/`(变宽并回 / 变窄零丢失 / 硬换行不合并 / CJK 不劈开)、`playground/segcheck/`(分段原语 83 项)、`playground/screenmapcheck/`(**231 项**:表 ↔ 公式等价、跨 buffer 隔离、段平移往返与越界)。
+
+**擦除语义(ED,宿主实现 clear 走这条)**:`ED 0/1/2` 只作用于**可视窗**(行数组尾部 `rows` 行),不碰历史、不动光标;`ED 3`(`ESC[3J`)= **Erase Saved Lines**,只丢可视窗**之上**已滚出的历史(`cutHistoryHead(screenBase)`),**可视屏内容与光标屏幕行都不许变**。曾经的实现是 `ED 3 → TermBufferClear`,行数组清空而 `cursor_row` 留在原处 —— 下一次写入把数组补空行补回那一行,提示符的屏幕行就等于"清屏那一刻攒下的历史长度"(实测宿主对 `clear` 发的正是 `\e[H\e[2J\e[3J`):历史长则提示符沉到屏幕底部、历史短则停在中间或顶部,同一个 `clear` 每次落点不同。
+
+**光标在屏上(不变式,已结构化)**:`cursor_row` **就是屏幕行**(0..rows-1),所以"光标在视口内"不再是一条需要守的不变式 —— 它由坐标语义直接保证(旧模型里 `cursor_row` 是物理行、可落到窗口之上,才需要额外守)。resize 时按"先换算成尺寸无关的内容行、再落回新窗"重算:`applyConsoleSize` 里 `content_row = screenBase + cursor_row`,窗口变矮后若内容行落到窗之上,按真实终端语义丢掉新屏装不下的**底部**行(通报选区平移),光标成为窗顶。
 
 **选区数据模型(绝对锚定)**:`Selection` 存 buffer 物理 `(line, col)` 区间 —— **内容在,选区在**:窗口/页/焦点变化免疫;内容结构变化(插/删行、插/删字符)由 buffer 写路径通报平移;锚点内容被删 → 清。`SelectionValidate()` 每帧在渲染前定稿(自愈)。
 

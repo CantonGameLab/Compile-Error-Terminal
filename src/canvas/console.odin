@@ -24,7 +24,14 @@ Console :: struct {
 	pty_rows, pty_cols : u16, // ConPTY 已应用尺寸(尺寸应用趟与 rows/cols 比较判变化)
 	resize_retry : u32, // 尺寸应用连续失败次数(0 = 上一帧成功);仅用于日志去重,失败即重试
 	origin_x, origin_y : f32, // 居中后网格左上角(内容区坐标空间);每帧由 ConsoleUpdateLayout 重算
-	cursor_row, cursor_col : u16, // 指向 active buffer 的物理行
+	cursor_row, cursor_col : u16, // **屏幕坐标**:行 0..rows-1、列 0..cols-1(VT 状态的地址空间)
+
+	// 光标段缓存(写入热路径,见 buffer.odin 的 cursorSegment):光标所在逻辑行 + 段首列。
+	// 折行时 O(1) 增量推进;跳转/结构变化只置 cursor_seg_ok = false,下次写入时惰性查表。
+	cursor_line : u32,
+	cursor_off : u32,
+	cursor_seg_ok : bool,
+	cursor_seg_row : u16, // 缓存属于哪个屏幕行:行一变(任何跳转)自动作废,不必在每个 VT 分支里撒失效
 
 	// 输入识别态(草稿纸)与终端语义态:两个平级组件,分别见 vtparse.odin / vt.odin
 	parser : Parser,
@@ -245,6 +252,7 @@ consoleInitSession :: proc(console_h : mem.Handle, rows, cols : u16, conpty_hand
 	console.pty_rows = rows // 初始 = ConPTY 创建尺寸(80x24),与传入一致
 	console.pty_cols = cols
 	console.cursor_row, console.cursor_col = 0, 0
+	cursorSegmentInvalidate(console) // 新会话:光标段缓存从零开始(屏幕行表首次访问时建)
 	console.conpty_handle = conpty_handle
 	console.term_buffer_ids = {}
 	console.term_buffer_count = 0
@@ -342,54 +350,60 @@ ConsoleActivateTermBuffer :: proc(console_h, term_buffer_h : mem.Handle) -> bool
 	return false
 }
 
-// 视口顶行(物理索引):普通 = 贴底;review = 锚定 review_line(底行)上推 rows 行。
-// 渲染/光标应答/resize 共用一个公式,勿在别处重写。
+// 视口顶行(逻辑行号):= 窗口锚点所在行(buffer.odin 的 viewportAnchor,唯一推导)。
+// 渲染/光标应答/resize 共用,勿在别处重写。
 viewportTop :: proc(console : ^Console, tb : ^TermBuffer) -> int {
-	if tb.review_line == 0 {
-		return max(0, len(tb.lines) - int(console.rows))
-	}
-	top := int(tb.review_line) - 1 - (int(console.rows) - 1)
-	return max(0, top)
+	line, _ := viewportAnchor(console, tb)
+	return line
 }
 
-// 改网格尺寸的副作用:cursor_col/滚动区下限 clamp + review 视口锚定补偿。
+// 改网格尺寸的副作用:cursor_col/滚动区下限 clamp + **光标屏幕行重算** + review 锚定补偿。
 // 锚定规则(同 alacritty):普通(贴底)保持贴底;review 保持视口内容(顶行)不动。
-// 注意:cursor_row 是物理行索引(指向 lines,可 > rows),不能按屏幕行 clamp。
+// 光标是**屏幕坐标**(见 Console.cursor_row),尺寸一变就必须重算:先换算成尺寸无关的
+// 内容行,再按新窗口落回屏幕行;内容行落到新窗之上时,按真实终端语义丢掉新屏装不下的
+// **底部**行,让光标成为窗顶(与老实现同一行为 —— 那时 cursor_row 是物理行,砍的是它下面的行)。
 applyConsoleSize :: proc(console : ^Console, rows, cols : u16) {
 	tb := GetTermBuffer(console.active_term_buffer_id)
-	visible_top_before := 0
+	visible_top_before := 0 // 活窗口顶行(裁剪判定用)
+	content_line := 0 // 光标所在**逻辑行**(尺寸无关)
 	if tb != nil {
-		visible_top_before = viewportTop(console, tb)
+		visible_top_before, _ = viewportAnchorLive(console, tb)
+		content_line, _ = cursorSegment(console, tb)
 	}
 
 	console.rows, console.cols = rows, cols
 	console.cursor_col = min(console.cursor_col, cols - 1)
 	console.vt.scroll_bottom = rows - 1
 	console.vt.wrap_pending = false
+	cursorSegmentInvalidate(console) // 几何变了:光标段下一次写入时重查
 
-	// 缩小后光标可能落到(贴底)视口之上:此后逐行写入全在屏外,表现为"终端卡住不动"。
-	// cursor_row 是物理行索引不能按屏幕行 clamp,只能按真实终端语义丢掉新屏装不下的
-	// **底部**行,让光标留在窗内。光标本来就在窗内(常态)时这里是 no-op。
 	if tb != nil {
-		base := max(0, len(tb.lines) - int(rows))
-		keep := int(console.cursor_row) + int(rows) // 光标下面保留 rows-1 行
-		if int(console.cursor_row) < base && keep < len(tb.lines) {
-			n := len(tb.lines) - keep
-			for i in keep ..< len(tb.lines) {
-				delete(tb.lines[i].cells)
+		// 光标的内容行落到**活窗口**之上 ⇒ 按真实终端语义丢掉新屏装不下的底部行,
+		// 让光标成为窗顶(与老实现同一行为)。
+		if content_line < visible_top_before {
+			keep := content_line + int(rows)
+			if keep < len(tb.lines) {
+				n := len(tb.lines) - keep
+				for i in keep ..< len(tb.lines) {
+					delete(tb.lines[i].cells)
+				}
+				selectionLineDelete(keep, n)
+				remove_range(&tb.lines, keep, keep + n)
 			}
-			selectionLineDelete(keep, n)
-			remove_range(&tb.lines, keep, keep + n)
 		}
+		tb.screen_dirty = true
 	}
 
-	// review 中:按"顶行不变"重定 review_line(底行随 rows 平移;内容不被拽走)
-	if tb != nil && tb.review_line != 0 {
-		nl := visible_top_before + int(rows) - 1 // 新底行索引
-		if nl >= len(tb.lines) - 1 {
-			tb.review_line = 0 // 到底 = 回到普通
+	// review 锚点是**顶行**编码(锁左上角那块内容),rows 变化不需要重定它;
+	// 但 cols 变了 ⇒ 段边界跟着变 ⇒ 把锚点吸附到"包含它的那一段"的起点,
+	// 免得窗口从一行的中途开始显示。
+	if tb != nil && tb.review_top != 0 {
+		li := int(tb.review_top) - 1
+		if li < len(tb.lines) {
+			cells := lineContent(tb.lines[li].cells[:])
+			tb.review_off = u32(segmentStartAt(cells, max(1, int(cols)), int(tb.review_off)))
 		} else {
-			tb.review_line = u32(nl + 1)
+			tb.review_top, tb.review_off = 0, 0 // 内容被裁到锚点之上 ⇒ 回到最新
 		}
 	}
 }
@@ -468,14 +482,14 @@ ConsoleViewportTop :: proc(console_h : mem.Handle) -> (top : int, in_review : bo
 	if tb == nil {
 		return 0, false
 	}
-	return viewportTop(console, tb), tb.review_line != 0
+	return viewportTop(console, tb), tb.review_top != 0
 }
 
 // ---------------------------------------------------------------------------
 // 写路径
 // ---------------------------------------------------------------------------
-// 当前屏幕(底部 rows 行)在 lines 里的物理起始行;len <= rows 时为 0(顶部锚定)
-screenBase :: proc(console : ^Console, tb : ^TermBuffer) -> int {
-	return max(0, len(tb.lines) - int(console.rows))
+// 窗口顶行 = 锚点(唯一推导在 buffer.odin 的 viewportAnchor);这里只留一个语义化入口。
+screenTopLine :: proc(console : ^Console, tb : ^TermBuffer) -> int {
+	return viewportTop(console, tb)
 }
 
