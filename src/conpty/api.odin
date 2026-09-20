@@ -186,6 +186,30 @@ loadConptyDll :: proc() -> win.HMODULE {
 	return win.LoadLibraryW(win.LPCWSTR(&wide[0]))
 }
 
+// conpty.dll 只是**壳**:真正的宿主进程是它**自己所在目录**里的 `OpenConsole.exe`,
+// 找不到就依次退回 `<同目录>/<arch>/OpenConsole.exe` → `%SystemRoot%\System32\conhost.exe`
+// (Windows Terminal 源码 `src/winconpty/winconpty.cpp:_ConsoleHostPath`)。
+// 也就是说"dll 加载成功"≠"新实现生效":缺宿主 exe 时它**静默**用回装箱 conhost。
+// 这正是 Win10 上把排查带偏的地方 —— 日志写着 OpenConsole,跑的却是装箱 conhost,
+// 于是"换了 conpty.dll 问题依旧"。所以宿主不在位就当这份 dll 不可用,老实回系统实现。
+conptyHostExePresent :: proc(dll : win.HMODULE) -> bool {
+	buf : [512]u16
+	n := win.GetModuleFileNameW(dll, win.LPWSTR(&buf[0]), u32(len(buf)))
+	if n == 0 || int(n) + len("OpenConsole.exe") + 1 > len(buf) {
+		return false
+	}
+	i := int(n)
+	for i > 0 && buf[i - 1] != '\\' && buf[i - 1] != '/' {
+		i -= 1 // 砍掉 dll 文件名,留目录
+	}
+	for ch, k in "OpenConsole.exe" {
+		buf[i + k] = u16(ch)
+	}
+	buf[i + len("OpenConsole.exe")] = 0
+	// 注意查的是 **buf 起始**(整条绝对路径):从 &buf[i] 查等于只查文件名,必然找不到
+	return win.GetFileAttributesW(win.LPCWSTR(&buf[0])) != win.INVALID_FILE_ATTRIBUTES
+}
+
 // 首次使用自动解析(幂等,只跑一次)。结果写一行 stderr —— 这是 Win10 兼容性
 // 排查的关键事实(用没用到外部实现,一眼可见)。
 initConptyApi :: proc() {
@@ -201,34 +225,40 @@ initConptyApi :: proc() {
 	}
 
 	if h := loadConptyDll(); h != nil {
+		reject := "" // 非空 = 这份 dll 不能用,原因写在这里
 		for set in CONPTY_EXPORT_SETS {
 			c := win.GetProcAddress(h, set[0])
 			r := win.GetProcAddress(h, set[1])
 			cl := win.GetProcAddress(h, set[2])
-			if c != nil && r != nil && cl != nil {
-				conpty_apis[ConptyImpl.External] = ConptyApi {
-					create = transmute(CreatePseudoConsoleFn) c,
-					resize = transmute(ResizePseudoConsoleFn) r,
-					close  = transmute(ClosePseudoConsoleFn) cl,
-				}
-				conpty_dll = h // 常驻:已有会话可能仍在用它
-				conpty_ext_available = true
-				conpty_prefer_ext = true // 部署了就用(与 Alacritty 一致);命令可改
-				conpty_export_set = set[0]
+			if c == nil || r == nil || cl == nil {
+				continue
+			}
+			if !conptyHostExePresent(h) {
+				reject = "⚠ conpty.dll 同目录缺 OpenConsole.exe(它会静默退回装箱 conhost),已改用系统实现;两个文件必须放在一起"
 				break
 			}
+			conpty_apis[ConptyImpl.External] = ConptyApi {
+				create = transmute(CreatePseudoConsoleFn) c,
+				resize = transmute(ResizePseudoConsoleFn) r,
+				close  = transmute(ClosePseudoConsoleFn) cl,
+			}
+			conpty_dll = h // 常驻:已有会话可能仍在用它
+			conpty_ext_available = true
+			conpty_prefer_ext = true // 部署了就用(与 Alacritty 一致);命令可改
+			conpty_export_set = set[0]
+			break
 		}
 		if !conpty_ext_available {
-			// 半残的 dll:两套导出都没齐,不要留
+			// 半残的 dll(导出不全 / 宿主 exe 不在位):不要留
 			win.FreeLibrary(h)
-			fmt.eprintln("[conpty] conpty.dll 存在但导出不全,已忽略")
+			fmt.eprintfln("[conpty] %s", reject != "" ? reject : "conpty.dll 存在但导出不全,已忽略")
 		}
 	}
 
 	if GetConptyPreferExternal() {
-		fmt.eprintfln("[conpty] 新会话使用外部 conpty.dll(OpenConsole 实现,导出名 = %s)", conpty_export_set)
+		fmt.eprintfln("[conpty] 新会话使用外部 conpty.dll(宿主 OpenConsole.exe 已就位,导出名 = %s)", conpty_export_set)
 	} else {
-		fmt.eprintln("[conpty] 新会话使用系统 kernel32(装箱 conhost 实现;conpty.dll 未找到)")
+		fmt.eprintln("[conpty] 新会话使用系统 kernel32(装箱 conhost 实现)")
 	}
 }
 
