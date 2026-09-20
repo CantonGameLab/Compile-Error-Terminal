@@ -35,7 +35,7 @@
 #     build/CETerm-<版本>-win64/        便携目录:exe + SDL3.dll + resource/ + 文档
 #     build/CETerm-<版本>-win64.zip     压缩包(顶层目录名同便携目录)
 #     build/SHA256SUMS.txt
-#   版本号从 ceterm.rc 的 FILEVERSION 解析 —— 编进 exe 的版本信息与包名同源,不会对不上。
+#   版本号从 ceterm.rc 的 FileVersion 字符串解析 —— 编进 exe 的版本信息与包名同源,不会对不上。
 [CmdletBinding()]
 param(
     [switch]$Stage,
@@ -65,12 +65,15 @@ function Remove-Tree($path) {
     else { Remove-Item $path -Recurse -Force }
 }
 
-# --- 0. 版本:取自 ceterm.rc 的 FILEVERSION(编进 exe 的版本信息与发布包名同源)---
+# --- 0. 版本:取自 ceterm.rc 里 FileVersion 的字符串值 ---
+# 用它而不是 FILEVERSION 的二进制四段值:Windows 强制那四段是数字(0,451,0,0),
+# 而显示串可以直接写 "0.451"。这个串同时喂资源管理器"详细信息"、发布包名和 git tag,
+# 三者天然一致,不会出现"exe 里写 0.451.0.0、包名叫 v0.451.0"这种对不上的情况。
 $ver = $null
-if ((Get-Content (Join-Path $root 'ceterm.rc') -Raw) -match 'FILEVERSION\s+(\d+)\s*,\s*(\d+)\s*,\s*(\d+)') {
-    $ver = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+if ((Get-Content (Join-Path $root 'ceterm.rc') -Raw) -match 'VALUE\s+"FileVersion"\s*,\s*"([^"]+)"') {
+    $ver = $Matches[1]
 } else {
-    Fail "无法从 ceterm.rc 解析 FILEVERSION"
+    Fail "无法从 ceterm.rc 解析 FileVersion 字符串"
 }
 $pkgName = "CETerm-$ver-win64"
 

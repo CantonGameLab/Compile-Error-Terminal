@@ -1,9 +1,22 @@
 # CompileErrorTerminal (CETerm)
-CompileErrorTerminal (CETerm for short) is an open-source terminal emulator for Windows project maintained by a sub-studio under CantonGameLab.
-It uses an OpenGL graphics API rendering pipeline and supports most features of modern terminal emulators, such as split panes, tab pages, window management, and keybindings. At the same time, we use a dirty flag mechanism to avoid the common drawback of rendering-based terminals consuming excessive CPU resources. 
-On top of this, we implemented a fully scriptable terminal behavior control system through a simple parser. You can configure our terminal through the terminal scripting language we developed (config.ceterm) and implement the complete terminal control logic on top of it. Based on this scripting language, we also implemented support for OSC semantic sequences. Through a layer of OSC semantic wrapping, a process under a terminal window can interact with and control CETerm itself via stdin/stdout text streams + OSC 999.
+CompileErrorTerminal 是一个由Odin Programming Language编写的高性能Windows终端开源模拟器 相较于已有的Alacritty, Kitty等终端模拟器 CompileErrorTerminal具备灵活的分屏分页功能 对每个窗口及其Console分别维护相关的状态 同时 我们还具备一个及其强大的Command-Userapi系统架构 通过这个架构 你可以使用ceterm脚本来实现几乎任何终端行为 同时 从代码上来看 CompileErrorTerminal 的架构简单清晰 具有很高的可拓展性 且得益于Odin Programming Language强大的编译器 我们的程序构建也非常简单 如果是构建一个最简单的实例 只需一个 odin build * 指令即可 对于开发者来讲是非常友好且方便的 
 
-The project is developed entirely in the Odin Programming Language, including program builds, test programs, and all program code. It can be regarded as a relatively large and very practical project in the Odin programming community.
+CompileErrorTerminal同Alacritty Kitty这些高性能终端模拟器一样 采用图形接口进行渲染 但是CompileErrorTerminal同时还提供了一个阻塞模式 开启阻塞模式之后 Terminal会进行响应式的渲染和运行 最大程度上的减少了运行资源消耗 同时对于用户体验几乎没有什么影响 
 
-The project is licensed under GPL v3.0, so you can use the project code fairly freely.
+在项目运行初期我们还加入了一个FPS tag显示功能以满足部分玩家的盯帧需求 但是为了视觉效果的简洁性 我们最终还是取消了这个功能 之后会根据用户反馈看看要不要加回来
 
+另一个比较重要的视觉功能就是background shader了 因为我们采用的OpenGL图形api来进行构建 那么所有的渲染元素需要统一经过shader来呈现 那么我们选择将background的fbo单独出来再跑一个shader 玩家可以自由修改resource/shader 下的background shader来添加视觉元素
+
+另一个比较重要的功能就是OSC999拓展序列 我们设计了一系列的ansi序列让程序能够直接通过stdout来控制终端的所有行为 这个通过这个序列可以直接运行所有的command 同时还有丰富的返回函数 设计了一套标准化的io协定来让程序“摄取”返回值 如果在终端里面让agent接入stdin/stdout流就能让AI使用neovim进行人格化的写代码了 我觉得这一定程度上解决了AI修改代码不直观 “过于简单粗暴的修改替换” 的问题 之后或许能成为一种terminal use的解决方案
+
+另一个值得说的点就是这个项目在编码程式上面全量才用了DOD设计原则 具体的理论基础可以参考 
+
+CppCon 2014: Mike Acton "Data-Oriented Design and C++" 
+
+Casey Muratori – The Big OOPs: Anatomy of a Thirty-five-year Mistake – BSC 2025
+
+Preventing the Collapse of Civilization / Jonathan Blow (Thekla, Inc)
+
+以及我们工作室日后肯定会做的程序设计演讲 可以期待一下
+
+同时Odin确实是一门非常直观且好用的编程语言 对于喜欢手动管理内存的同学们极其的友好 个人认为Odin相比于Zig从语法和理念上来讲都更加的优雅一点

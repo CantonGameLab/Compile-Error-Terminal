@@ -9,13 +9,16 @@
 // 需要 PATH 里有 llvm-rc 或 Windows SDK 的 rc.exe(Odin 会调用其中之一)。
 //
 // 图标路径相对资源编译器的工作目录 = 仓库根,见 resource/icon/。
-// 版本号需与发布版本同步(将来由 build.ps1 统一注入)。
+//
+// 版本号以本文件的 FileVersion 字符串为唯一来源:build.ps1 读它来命名发布包,tag 用同一个值。
+// 改版本只需改下面 FILEVERSION / PRODUCTVERSION 的二进制四段值 + 两个 VALUE 字符串,不另建 VERSION 文件。
+// (Windows 的 FILEVERSION 强制四段,所以 "0.451" 要写成 0,451,0,0;显示串按人读的写。)
 
 1 ICON "resource/icon/ceterm.ico"
 
 1 VERSIONINFO
-FILEVERSION     0,1,0,0
-PRODUCTVERSION  0,1,0,0
+FILEVERSION     0,451,0,0
+PRODUCTVERSION  0,451,0,0
 FILEOS          0x40004   // VOS_NT_WINDOWS32
 FILETYPE        0x1       // VFT_APP
 BEGIN
@@ -25,12 +28,12 @@ BEGIN
     BEGIN
       VALUE "CompanyName",      "Canton Game Lab"
       VALUE "FileDescription",  "CompileErrorTerminal (CETerm)"
-      VALUE "FileVersion",      "0.1.0.0"
+      VALUE "FileVersion",      "0.451"
       VALUE "InternalName",     "ceterm"
       VALUE "LegalCopyright",   "Copyright (C) 2026 Canton Game Lab. GPL-3.0-only."
       VALUE "OriginalFilename", "ceterm.exe"
       VALUE "ProductName",      "CompileErrorTerminal"
-      VALUE "ProductVersion",   "0.1.0.0"
+      VALUE "ProductVersion",   "0.451"
     END
   END
   BLOCK "VarFileInfo"
