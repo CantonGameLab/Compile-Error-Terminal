@@ -1,11 +1,21 @@
+# ---- 本机专用:不随仓库分发 ----
+# Odin 工具链(约 200MB,由使用者自行下载)
 reference/
+# 回归探针(百来个临时程序)
 playground/
+# DSH agent 配置(skills 等)
 .dsh/
+# 图标设计源(已定稿不再改;产物已提交在 resource/icon/)
+design/
 
-# 构建产物(不跟踪:exe 由构建产生,发布走 Releases 附件)
-*.exe
+# ---- 构建产物 ----
 build/
 
-# Odin -resource:<x>.rc 的中间产物,由资源编译器在 .rc 旁边生成,不会自动清理
-*.res
+# /*.exe 锚定在仓库根,只忽略根目录的探针产物。
+# 绝不能用通配的 *.exe —— resource/conpty/x64/OpenConsole.exe 是 ConPTY 必需的子进程宿主,
+# 它是随包分发的运行时文件,不能被忽略规则误伤(虽然已跟踪文件本就不受 .gitignore 影响,
+# 但一旦有人 git rm --cached 再 add 就会真的丢,不留这种坑)。
+/*.exe
 
+# Odin -resource:<x>.rc 的中间产物,由资源编译器生成在 .rc 旁边,不会自动清理
+*.res
