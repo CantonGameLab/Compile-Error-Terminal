@@ -285,6 +285,35 @@ insertLine :: proc(lines : ^[dynamic]Line, index : int) {
 	lines[index] = Line{}
 }
 
+// 从行数组头部裁掉 cut 行(历史永久丢弃),同步光标行号 / 选区通报 / review 锚定。
+// 调用方:超容量裁剪(trimScrollback)、ED 3 清 scrollback(视口之上全是历史)。
+// cut 不得越过光标行:光标是物理行索引,裁掉它所在的行会让 -= 下溢。
+cutHistoryHead :: proc(console_h : mem.Handle, cut : int) {
+	console := GetConsole(console_h)
+	if console == nil {
+		return
+	}
+	tb := GetTermBuffer(console.active_term_buffer_id)
+	if tb == nil || cut <= 0 || cut > len(tb.lines) || cut > int(console.cursor_row) {
+		return
+	}
+	for i in 0 ..< cut {
+		delete(tb.lines[i].cells)
+	}
+	remove_range(&tb.lines, 0, cut)
+	selectionLineDelete(0, cut) // 选区通报:被裁段内容消失,未裁段行号 -cut
+	console.cursor_row -= u16(cut)
+	// review 锚定行随裁剪平移;被裁掉的视口内容钳到顶(该历史段已丢弃)
+	if tb.review_line != 0 {
+		rl := max(0, int(tb.review_line) - 1 - cut)
+		if rl >= len(tb.lines) - 1 {
+			tb.review_line = 0 // 回到最新 = 普通
+		} else {
+			tb.review_line = u32(rl + 1)
+		}
+	}
+}
+
 // 只在全屏滚动路径调用;裁掉最老行
 trimScrollback :: proc(console_h : mem.Handle) {
 	console := GetConsole(console_h)
@@ -299,23 +328,8 @@ trimScrollback :: proc(console_h : mem.Handle) {
 	if len(tb.lines) <= max_lines + TRIM_SLACK {
 		return
 	}
-	cut := len(tb.lines) - max_lines
-	for i in 0 ..< cut {
-		delete(tb.lines[i].cells)
-	}
-	remove_range(&tb.lines, 0, cut)
-	selectionLineDelete(0, cut) // 选区通报:被裁段内容消失,未裁段行号 -cut
-	console.cursor_row -= u16(cut)
+	cutHistoryHead(console_h, len(tb.lines) - max_lines)
 	console.vt.scroll_top, console.vt.scroll_bottom = 0, console.rows - 1
-	// review 锚定行随裁剪平移;被裁掉的视口内容钳到顶(该历史段已丢弃)
-	if tb.review_line != 0 {
-		rl := max(0, int(tb.review_line) - 1 - cut)
-		if rl >= len(tb.lines) - 1 {
-			tb.review_line = 0 // 回到最新 = 普通
-		} else {
-			tb.review_line = u32(rl + 1)
-		}
-	}
 }
 
 // 擦除用 cell:带当前 SGR 背景色。xterm 语义:EL/ED/ECH 擦除的区域
@@ -428,7 +442,7 @@ vtEraseInLine :: proc(console_h : mem.Handle, mode : int) {
 	sanitizeWidePairs(line, cols) // 擦除端点可能落在宽字对中间
 }
 
-// mode:0 光标到屏尾 / 1 屏头到光标 / 2 可视区 / 3 全部 + 历史
+// mode:0 光标到屏尾 / 1 屏头到光标 / 2 可视区 / 3 只清 scrollback(历史,不动可视屏)
 vtEraseInDisplay :: proc(console_h : mem.Handle, mode : int) {
 	console := GetConsole(console_h)
 	if console == nil {
@@ -455,7 +469,11 @@ vtEraseInDisplay :: proc(console_h : mem.Handle, mode : int) {
 			vtClearLineAll(console_h, row)
 		}
 	case 3:
-		TermBufferClear(console.active_term_buffer_id)
+		// ED 3 = Erase Saved Lines:只擦可视窗之上已滚出的历史,可视屏与光标都不许动。
+		// 这里曾经整个 TermBufferClear ⇒ 行数组清空但 cursor_row 留在原处,下一次写入
+		// 把数组补空行补回那一行,提示符的屏幕行 = 清屏前攒下的历史长度(实测宿主对
+		// clear 发的正是 ESC[H ESC[2J ESC[3J,于是"有时在底部、有时在中间、有时在上面")。
+		cutHistoryHead(console_h, screenBase(console, tb))
 	}
 }
 

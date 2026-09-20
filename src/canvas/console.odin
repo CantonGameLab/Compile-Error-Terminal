@@ -367,6 +367,22 @@ applyConsoleSize :: proc(console : ^Console, rows, cols : u16) {
 	console.vt.scroll_bottom = rows - 1
 	console.vt.wrap_pending = false
 
+	// 缩小后光标可能落到(贴底)视口之上:此后逐行写入全在屏外,表现为"终端卡住不动"。
+	// cursor_row 是物理行索引不能按屏幕行 clamp,只能按真实终端语义丢掉新屏装不下的
+	// **底部**行,让光标留在窗内。光标本来就在窗内(常态)时这里是 no-op。
+	if tb != nil {
+		base := max(0, len(tb.lines) - int(rows))
+		keep := int(console.cursor_row) + int(rows) // 光标下面保留 rows-1 行
+		if int(console.cursor_row) < base && keep < len(tb.lines) {
+			n := len(tb.lines) - keep
+			for i in keep ..< len(tb.lines) {
+				delete(tb.lines[i].cells)
+			}
+			selectionLineDelete(keep, n)
+			remove_range(&tb.lines, keep, keep + n)
+		}
+	}
+
 	// review 中:按"顶行不变"重定 review_line(底行随 rows 平移;内容不被拽走)
 	if tb != nil && tb.review_line != 0 {
 		nl := visible_top_before + int(rows) - 1 // 新底行索引
