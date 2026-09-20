@@ -387,7 +387,6 @@ applyConsoleSize :: proc(console : ^Console, rows, cols : u16) {
 				for i in keep ..< len(tb.lines) {
 					delete(tb.lines[i].cells)
 				}
-				selectionLineDelete(keep, n)
 				remove_range(&tb.lines, keep, keep + n)
 			}
 		}

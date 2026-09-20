@@ -443,7 +443,7 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 				} else if cell.cp == 0 && cell.wide {
 					continue
 				}
-				if sel_console && cv.CellSelected(line_idx, seg + c, w, int(console.cols)) {
+				if sel_console && cv.CellSelected(line_idx, seg + c, w, cv.LineWidth(line.cells[:], int(console.cols))) {
 					cx := console.origin_x + f32(c) * m.cell_width
 					cy := console.origin_y + f32(r) * m.cell_height
 					DrawRectBg(cx, cy, m.cell_width * f32(w), m.cell_height, theme.selection_bg)
@@ -502,7 +502,7 @@ drawConsole :: proc(node_h : mem.Handle, bg : bool, t : cv.Transform) {
 			if cell.reverse {
 				fg = cv.ResolveColor(cell.bg, theme.bg)
 			}
-			if sel_console && cv.CellSelected(line_idx, seg + c, 1, int(console.cols)) {
+			if sel_console && cv.CellSelected(line_idx, seg + c, 1, cv.LineWidth(line.cells[:], int(console.cols))) {
 				fg = theme.selection_fg // 选中字形换选区前景(背景已在 1 趟覆盖)
 			}
 			gid := draw_shaped[c]

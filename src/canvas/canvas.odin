@@ -20,7 +20,6 @@ Update :: proc() -> bool {
 
 	CommandBarReap() // 命令信道回读(本栏 poll;已执行 → 打结果/失败原因)
 
-	SelectionValidate() // 选区自愈(buffer 数据链验证;失效即清,渲染前定稿)
 
 	ProcessMouse()
 

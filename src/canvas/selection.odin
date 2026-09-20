@@ -1,6 +1,7 @@
-// 文本选区数据(Selection):buffer 坐标系内容标志 + 区间判定/平移/提取/剪贴板动作。
-// 坐标系 = TermBuffer 物理 (line, col):内容在,选区在 —— 窗口/页/焦点变化免疫;
-// 内容结构变化(插/删行、插/删字符)经 buffer 写路径通报平移;锚点内容被删 → 清。
+// 文本选区数据(Selection):buffer 内容坐标 + 区间判定/提取/剪贴板动作。
+// 坐标系 = TermBuffer 逻辑 (行, 列):内容在,选区在 —— 窗口/页/焦点/resize/重排免疫。
+// 生命周期只有两条规则(见下面"生命周期"段):**按键输入即取消**(唯一写点 exitReview)、
+// **review 时保持**;失效惰性判(SelectionValid),不设每帧自愈趟,也没有写路径平移通报。
 // host = 持有 buffer 的 console(换算/提取几何);渲染经 active buffer 比较,不经 host 查找。
 // userapi 动作:CopySelection / PasteClipboard / SelectionClear / SelectionAttach。
 package canvas
@@ -78,13 +79,6 @@ SelectionValid :: proc() -> bool {
 	return true
 }
 
-// 每帧自愈(ProcessMouse 前);失效即清。
-SelectionValidate :: proc() {
-	if !SelectionValid() {
-		SelectionClear()
-	}
-}
-
 SelectionClear :: proc() {
 	selection = {}
 }
@@ -135,6 +129,11 @@ screenToBuffer :: proc(console : ^Console, tb : ^TermBuffer, m : fnt.Metrics, x,
 	row := clamp(int((y - console.origin_y) / m.cell_height), 0, int(console.rows) - 1)
 	col = clamp(int((x - console.origin_x) / m.cell_width), 0, int(console.cols) - 1)
 	line_idx, off, _ := screenSegmentAt(console, tb, row)
+	// 内容之外的屏幕行会得到 len(lines)(表在末尾饱和)⇒ 夹到有效行:
+	// 后面所有消费者(normalize/词选/行选/高亮)都按"这个行号一定有效"来写。
+	if line_idx >= len(tb.lines) {
+		line_idx = len(tb.lines) - 1
+	}
 	return line_idx, off + col
 }
 
@@ -267,7 +266,7 @@ CellSelected :: proc(line, col, w, cols : int) -> bool {
 // 文本提取(纯函数,测试直接用;冷路径分配一次)
 // ---------------------------------------------------------------------------
 // 规则:区间内逐字(跳过续列)取 cp;行内跳过未写格(cp==0);每行尾随空格 trim;
-// 行间分隔 \r\n,但 lines[i].wrapped(由上一行折行)→ 分隔 ""(软换行拼接)。
+// 行间一律 \r\n:逻辑行存储下,一条 buffer 行就是一条真实文本行(软折行不产生新行)。
 ExtractSelectionText :: proc() -> []u8 {
 	if !SelectionValid() {
 		return nil
@@ -294,16 +293,18 @@ ExtractSelectionText :: proc() -> []u8 {
 			// 软折行不再产生新行(它只是同一行占多个屏幕段),所以这里不需要任何标记判断。
 			strings.write_string(&b, "\r\n")
 		}
+		// 逻辑行可以比屏幕宽:每行的"行尾"是它的内容长度,不是 cols
+		line_end := LineWidth(line.cells[:], cols)
 		s := 0
-		e := cols
+		e := line_end
 		if lo.line == hi.line {
 			s, e = lo.col, hi.col
 		} else if line_idx == lo.line {
-			s, e = lo.col, cols
+			s, e = lo.col, line_end
 		} else if line_idx == hi.line {
 			s, e = 0, hi.col
 		}
-		e = min(e, len(line.cells))
+		e = min(e, len(line.cells)) // 提取只读真实存在的格(视觉行宽可以比它大)
 		clear(&runes)
 		for col := s; col < e; col += 1 {
 			cell := line.cells[col]
@@ -326,78 +327,14 @@ ExtractSelectionText :: proc() -> []u8 {
 }
 
 // ---------------------------------------------------------------------------
-// 平移通报(buffer 写路径调用;仅坐标系有效时动作,结构变化前后均安全)
+// 生命周期(两条规则,替代原来的"写路径平移通报")
 // ---------------------------------------------------------------------------
-selectionLineInsert :: proc(at, n : int) {
-	if selection.buffer_h.id == 0 {
-		return
-	}
-	if selection.pivot.line >= at {
-		selection.pivot.line += n
-	}
-	if selection.cur.line >= at {
-		selection.cur.line += n
-	}
-}
-
-// 删除 [from, from+n):锚在被删内容 → 清;否则平移 -n
-selectionLineDelete :: proc(from, n : int) {
-	if selection.buffer_h.id == 0 {
-		return
-	}
-	pk := selection.pivot.line >= from && selection.pivot.line < from + n
-	ck := selection.cur.line >= from && selection.cur.line < from + n
-	if pk || ck {
-		SelectionClear()
-		return
-	}
-	if selection.pivot.line >= from + n {
-		selection.pivot.line -= n
-	}
-	if selection.cur.line >= from + n {
-		selection.cur.line -= n
-	}
-}
-
-selectionColInsert :: proc(row, at, n : int) {
-	if selection.buffer_h.id == 0 {
-		return
-	}
-	if selection.pivot.line == row && selection.pivot.col >= at {
-		selection.pivot.col += n
-	}
-	if selection.cur.line == row && selection.cur.col >= at {
-		selection.cur.col += n
-	}
-	selectionNormalize()
-}
-
-selectionColDelete :: proc(row, from, n : int) {
-	if selection.buffer_h.id == 0 {
-		return
-	}
-	if selection.pivot.line == row {
-		pc := selection.pivot.col
-		if pc >= from && pc < from + n {
-			SelectionClear()
-			return
-		}
-		if pc >= from + n {
-			selection.pivot.col -= n
-		}
-	}
-	if selection.cur.line == row {
-		cc := selection.cur.col
-		if cc >= from && cc < from + n {
-			SelectionClear()
-			return
-		}
-		if cc >= from + n {
-			selection.cur.col -= n
-		}
-	}
-	selectionNormalize()
-}
+// 1. **按键输入即取消**:唯一入口 FeedConsole 里 SelectionClear —— 用户一动键盘,
+//    选区就没了(常规终端行为),所以不需要"内容变了怎么修选区"这套账。
+// 2. **review 时保持**:选区锚在 buffer 的 (行, 列) 坐标上,是**内容坐标** ——
+//    翻历史、切页、改尺寸、重排都不影响它,不需要任何通报或补偿。
+// 另外:缓冲区被整块清空(TermBufferClear:交替屏/清屏)时清,锚点行越界时
+// 由 SelectionValid 惰性判失效(不设每帧自愈趟)。
 
 // ---------------------------------------------------------------------------
 // 词/行选择(M3):双击词选 / 三击行选 / 全选
@@ -492,7 +429,7 @@ SelectionSetWord :: proc(buffer_h : mem.Handle, line, col : int) -> bool {
 	return true
 }
 
-// 三击语义:整行选 [0, cols)
+// 三击语义:整行选 [0, lineWidth)
 SelectionSetLine :: proc(buffer_h : mem.Handle, line : int) -> bool {
 	tb := GetTermBuffer(buffer_h)
 	if tb == nil {
@@ -508,7 +445,7 @@ SelectionSetLine :: proc(buffer_h : mem.Handle, line : int) -> bool {
 		buffer_h = buffer_h,
 		host = host,
 		pivot = { line = line, col = 0 },
-		cur = { line = line, col = int(console.cols) },
+		cur = { line = line, col = LineWidth(tb.lines[line].cells[:], int(console.cols)) },
 	}
 	return true
 }
@@ -533,7 +470,7 @@ SelectionSelectAll :: proc() -> bool {
 		buffer_h = console.active_term_buffer_id,
 		host = console_h,
 		pivot = { line = 0, col = 0 },
-		cur = { line = len(tb.lines) - 1, col = int(console.cols) },
+		cur = { line = len(tb.lines) - 1, col = LineWidth(tb.lines[len(tb.lines)-1].cells[:], int(console.cols)) },
 	}
 	return true
 }

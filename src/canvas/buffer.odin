@@ -191,11 +191,12 @@ segmentStartAt :: proc(cells : []Cell, cols, at : int) -> int {
 
 // 锚点前后移动 delta 个**屏幕段**(delta < 0 = 往历史走);越界就停在边界。
 ViewportAnchorShift :: proc(tb : ^TermBuffer, cols : int, line, off, delta : int) -> (nline, noff : int) {
-	cols := max(1, cols)
-	nline, noff = clamp(line, 0, max(0, len(tb.lines) - 1)), off
+	// 先判 tb:下面立刻要读 tb.lines(空/失效 buffer 直接停在开头)
 	if tb == nil || len(tb.lines) == 0 {
 		return 0, 0
 	}
+	cols := max(1, cols)
+	nline, noff = clamp(line, 0, len(tb.lines) - 1), off
 	if delta > 0 {
 		for _ in 0 ..< delta {
 			cells := lineContent(tb.lines[nline].cells[:])
@@ -369,6 +370,11 @@ LineExtent :: proc(cells : []Cell) -> int {
 	return n
 }
 
+// 视觉行宽:高亮/整行选用的"行尾" = 至少铺满屏幕宽,长行则到它的内容末尾
+LineWidth :: proc(cells : []Cell, cols : int) -> int {
+	return max(cols, LineExtent(cells))
+}
+
 // 内容视图:段数/锚点/推进只看内容,不看补齐的空白
 lineContent :: proc(cells : []Cell) -> []Cell {
 	return cells[:LineExtent(cells)]
@@ -518,7 +524,6 @@ splitLineAt :: proc(tb : ^TermBuffer, line_idx, at : int) -> int {
 	insertLine(&tb.lines, line_idx + 1)
 	append(&tb.lines[line_idx + 1].cells, ..tb.lines[line_idx].cells[at:])
 	resize(&tb.lines[line_idx].cells, at)
-	selectionLineInsert(line_idx + 1, 1) // 选区通报:尾部内容换到新行(其后行号 +1)
 	tb.screen_dirty = true
 	return line_idx + 1
 }
@@ -634,8 +639,6 @@ vtScrollUp :: proc(console_h : mem.Handle) {
 	remove_range(&tb.lines, top, top + 1)
 	insertLine(&tb.lines, bottom)
 	// 选区通报:顶行删 + 底行补空 = 滚动区内整体上移一格
-	selectionLineDelete(top, 1)
-	selectionLineInsert(bottom, 1)
 	cursorSegmentInvalidate(console)
 	tb.screen_dirty = true
 }
@@ -661,8 +664,6 @@ vtScrollDown :: proc(console_h : mem.Handle) {
 	remove_range(&tb.lines, bottom, bottom + 1)
 	insertLine(&tb.lines, top)
 	// 选区通报:底行删 + 顶行补空 = 滚动区内整体下移一格
-	selectionLineDelete(bottom, 1)
-	selectionLineInsert(top, 1)
 	cursorSegmentInvalidate(console)
 	tb.screen_dirty = true
 }
@@ -700,7 +701,6 @@ cutHistoryHead :: proc(console_h : mem.Handle, cut : int) {
 		delete(tb.lines[i].cells)
 	}
 	remove_range(&tb.lines, 0, cut)
-	selectionLineDelete(0, cut) // 选区通报:被裁段内容消失,未裁段行号 -cut
 	cursorSegmentInvalidate(console) // 光标的内容行号整体前移,缓存作废(惰性重查)
 	tb.screen_dirty = true
 	// review 锚点随裁剪平移;锚点本身被裁掉 ⇒ 回到最新(那段历史已经不存在了)
@@ -988,7 +988,6 @@ vtDeleteChars :: proc(console_h : mem.Handle, n : int) {
 		line.cells[off + i] = erase
 	}
 	sanitizeWidePairs(line, off, off + cols) // 左移会把宽字对从段内边界处劈开
-	selectionColDelete(line_idx, off + col, nn) // 选区通报:行内删除(列平移/内容消失)
 	tb.screen_dirty = true
 }
 
@@ -1022,7 +1021,6 @@ vtInsertChars :: proc(console_h : mem.Handle, n : int) {
 		line.cells[off + i] = erase
 	}
 	sanitizeWidePairs(line, off, off + cols) // 右移会把宽字对从段内边界处劈开
-	selectionColInsert(line_idx, off + col, nn) // 选区通报:行内插入(列平移)
 	tb.screen_dirty = true
 }
 
@@ -1052,7 +1050,6 @@ vtInsertLines :: proc(console_h : mem.Handle, n : int) {
 		}
 		insertLine(&tb.lines, row)
 	}
-	selectionLineInsert(row, n) // 选区通报:row 处插入 n 行(行号平移)
 	cursorSegmentInvalidate(console)
 	tb.screen_dirty = true
 }
@@ -1102,8 +1099,6 @@ vtDeleteLines :: proc(console_h : mem.Handle, n : int) {
 		actual += 1
 	}
 	// 选区通报:删 [row, row+actual) + 底补 actual 空行
-	selectionLineDelete(row, actual)
-	selectionLineInsert(bottom, actual)
 	cursorSegmentInvalidate(console)
 	tb.screen_dirty = true
 }

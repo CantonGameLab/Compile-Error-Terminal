@@ -11,10 +11,29 @@ import "event"
 import "input"
 import "paths"
 import "render"
+import "core:path/filepath"
 import "core:fmt"
+import "core:os"
+import "base:runtime"
 import s3 "vendor:sdl3"
 
+// 崩溃落盘:GUI 子系统构建(-subsystem:windows)没有 stderr,panic 文本会被整个丢掉,
+// 表现成"程序直接退出、没有任何报错"。把 panic 前缀/消息/位置写进 exe 同目录的
+// ceterm-crash.log(覆盖写 = 只留最后一次),console 构建同时仍打到 stderr。
+// 在 main 入口安装,覆盖整个进程生命周期(context.assertion_failure_proc 是 context 字段)。
+@(private = "file")
+crashLog :: proc(prefix, message : string, loc : runtime.Source_Code_Location) -> ! {
+	line := fmt.tprintf("[panic] %s%s\n  位置: %s:%d:%d\n  过程: %s\n", prefix, message,
+		loc.file_path, loc.line, loc.column, loc.procedure)
+	dir := filepath.dir(os.args[0]) // exe 所在目录(开发时 = 仓库根)
+	log := len(dir) > 0 ? fmt.aprintf("%s/ceterm-crash.log", dir) : "ceterm-crash.log"
+	_ = os.write_entire_file(log, line)
+	fmt.eprint(line)
+	os.exit(1)
+}
+
 main :: proc() {
+	context.assertion_failure_proc = crashLog // GUI 构建下唯一能看到崩溃原因的通道
 	paths.Init() // 资源根:发行版 = exe 同目录的 resource/;开发 = cwd/resource(见 paths 模块)
 	if !render.Init() {
 		fmt.eprintln("render init failed. OpenGL 4.4 in 2026, because Khronos would rather maintain a 2013 spec than admit Vulkan won. No window, no GL, no point. Alacritty renders this fine — in Rust, with 400 crates, and still no tabs.")
@@ -32,17 +51,7 @@ main :: proc() {
 		
 		fmt.println("Bro you should at least create ONE page in the right way to start! So now I can't help you anymore")
 	}
-
-	//MAIN LOOP标准循环
-	//
-	// 阻塞式:没活就睡在 SDL 事件队列上,不再空转出帧(此前静止画面也以数千 fps 重画)。
-	// 四个"有活"判据,任一为真跑一帧,全假才睡:
-	//   ① ConPTY 还有未读输出        conpty.AnyRingHasData()
-	//   ② SDL 还有相关事件未取走      event.RelevantEventsPending()
-	//   ③ 命令信道还有没消化完的事件  canvas.CommandPipePending()
-	//   ④ 动画相位切换点已到          render.NextAnimDeadlineMs()
-	// ① 是异步到达的(读线程推进 ring),靠 conpty.wakeMainLoop() 的 PushEvent 唤醒。
-	// 超时上限 BLOCK_MAX_MS 是安全网:万一有本清单没覆盖的状态,最多晚这么久刷一次。
+	
 	BLOCK_MAX_MS :: 500
 
 	for {

@@ -121,10 +121,11 @@ updateCursor :: proc() {
 				if m.cell_width > 0 && m.cell_height > 0 && tb != nil {
 					col := clamp(int((inp.Mouse.x - console.origin_x) / m.cell_width), 0, int(console.cols) - 1)
 					row := clamp(int((inp.Mouse.y - console.origin_y) / m.cell_height), 0, int(console.rows) - 1)
-					// 屏幕行 → 缓冲行:走屏幕行表(阶段1 与 top + row 逐位等价)
+					// 屏幕行 → 缓冲行:走屏幕行表(内容之外的行会**饱和在末尾位置** = len(lines))
 					line := screenLineAt(console, tb, row)
 					w := 1
-					if line >= 0 && line < len(tb.lines) && col < len(tb.lines[line].cells) {
+					line_ok := line >= 0 && line < len(tb.lines)
+					if line_ok && col < len(tb.lines[line].cells) {
 						cell := tb.lines[line].cells[col]
 						if cell.cp == 0 && cell.wide && col > 0 {
 							col -= 1
@@ -134,7 +135,9 @@ updateCursor :: proc() {
 							w = 2
 						}
 					}
-					if CellSelected(line, col, w, int(console.cols)) {
+					// 行宽也要判界后再取:内容之外没有行,用屏幕宽兜底
+					line_cols := line_ok ? LineWidth(tb.lines[line].cells[:], int(console.cols)) : int(console.cols)
+					if CellSelected(line, col, w, line_cols) {
 						inp.SetCursor(.Text)
 						return
 					}

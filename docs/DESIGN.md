@@ -437,8 +437,8 @@ CreateTermBuffer(...) / DestroyTermBuffer(h) / GetTermBuffer(h)
 - **光标本身就是屏幕坐标**(`Console.cursor_row/col`,VT 状态的地址空间):行 0..rows-1、列 0..cols-1。内容行由写入路径换算(`screenBase + cursor_row`,阶段2 换成查表拿 `(line, offset)`);因此 `CUU/CUD/CUP/VPA/DECSTBM/DECOM/IND/RI/DSR` 全部退化成纯屏幕算术,不再做 `± base` 的来回换算。
 - **写入路径用算术、读侧用表**:表只服务读侧 —— 否则每落一格就要重建一次 `rows` 项。
 - **表归 buffer(内容层)**:表的形状由内容长度决定(阶段2 起一条逻辑行可占多个屏幕行),失效源就是 buffer 的写路径 ⇒ 就地失效;交替屏各持一张表 ⇒ **切页零失效逻辑**。建表仍要"屏幕多高",那是窗格几何 ⇒ 入口签名 `screenEnsure(console, tb)`:参数取几何,状态存 tb。
-- **失效判据 = 输入快照比较**(`screen_top` / `screen_rows`):阶段1 表值只由这两项决定,所以缓冲写路径里**不撒** dirty 标志 —— 比较不中即重建,漏置标志也不可能读到陈旧表(阶段2 写入会改变内容长度,那时判据换成内容版本、由写路径就地置失效)。
-- **阶段1(已落地,行为逐位不变)**:一逻辑行 = 一屏幕行 ⇒ `offset` 恒 0、表顶 = `viewportTop`,与旧的 `top + r` 完全等价(探针 `playground/screenmapcheck/` **266 项断言**对拍,含"主屏停在 review 时切交替屏,两表互不污染")。
+- **失效 = `screen_dirty`**:内容长度进了推导(一行占几段由内容决定),没有便宜的"输入快照比较"可用了 ⇒ 由写路径/几何/review/裁剪/清空**就地置位**,`screenEnsure` 消费并清除;另加 `len(screen) == rows` 兜住"新建但零值状态说自己是干净的"这一初始态。
+- **内容之外的行 = 饱和在 `len(lines)`(不是伪造行号)**:表对内容用尽之后的屏幕行一律给 `line = len(lines)`。**读方必须在索引 `lines` 前判界** —— 这条约定踩过坑:`mouse.odin` 的悬停命中里,`LineWidth(tb.lines[line].cells[:], …)` 落在边界检查之外,而那个分支只在有选区时进入 ⇒ 一选区、鼠标移到内容下方空白区就索引越界 panic(且 `-subsystem:windows` 把 panic 文本吞了,表现为"程序直接退出、没有报错")。凡是从屏幕行表取值后索引 `lines` 的地方,一律先 `line_ok := line >= 0 && line < len(tb.lines)`。
 - **阶段2(已落地,逻辑行 + 屏幕段)**:
   - 内容:`Line` = **逻辑行**(只有硬换行才开新行,长度可远超 cols);`wrapped` 标记**已删除** —— 软折行 = 同一行、硬换行 = 不同行,结构自己说明,段划分由 `SegmentLen`/`LineSegments`/`SegmentStart` 从内容**派生**(宽字对不跨段)。
   - 内容长度:`LineExtent` = 末尾空白之外的正文长度(`lineContent` 视图)。段数/锚点/推进一律按它算 —— 否则 EL/ED 补齐的空白会被当成内容(1 列下 "abc"+77 空白 = 80 段,窗口锚到行尾空白)。
@@ -455,7 +455,11 @@ CreateTermBuffer(...) / DestroyTermBuffer(h) / GetTermBuffer(h)
 
 **光标在屏上(不变式,已结构化)**:`cursor_row` **就是屏幕行**(0..rows-1),所以"光标在视口内"不再是一条需要守的不变式 —— 它由坐标语义直接保证(旧模型里 `cursor_row` 是物理行、可落到窗口之上,才需要额外守)。resize 时按"先换算成尺寸无关的内容行、再落回新窗"重算:`applyConsoleSize` 里 `content_row = screenBase + cursor_row`,窗口变矮后若内容行落到窗之上,按真实终端语义丢掉新屏装不下的**底部**行(通报选区平移),光标成为窗顶。
 
-**选区数据模型(绝对锚定)**:`Selection` 存 buffer 物理 `(line, col)` 区间 —— **内容在,选区在**:窗口/页/焦点变化免疫;内容结构变化(插/删行、插/删字符)由 buffer 写路径通报平移;锚点内容被删 → 清。`SelectionValidate()` 每帧在渲染前定稿(自愈)。
+**选区数据模型(两条规则,故意做薄)**:`Selection` 存 buffer `(行, 列)` 区间(逻辑列,`SelectionPoint`)+ 所属 buffer/宿主 console。
+- **按键输入即取消**:唯一入口在 `exitReview`(它同时是"退出 review"与"用户动作"的唯一写点;`FeedConsole` 与 `ConsoleExitReview` 都走它)⇒ 不在内容写路径里做任何选区平移/自愈。
+- **review 时保持**:选区锚在内容坐标上 ⇒ 翻历史、切页、resize、重排都不影响它。
+- 失效只剩两种,都**惰性**判:`SelectionValid()` 检查锚点行是否还在界内(裁剪/清屏之后);`TermBufferClear`(交替屏/整块清屏)直接清。**没有每帧自愈趟**。
+- 行尾口径 = `LineWidth(cells, cols)` = `max(屏幕宽, 内容长度)`:高亮铺满整行(常规观感),长行则覆盖它全部段;文本提取只读真实存在的格(`min(e, len(cells))`)。
 
 **宽字符列算术(不变式)**:光标移动一律**纯算术**,禁止按缓冲内容(宽字续列)修正 —— BS = 列-1,CUB n = 列-n,光标**允许**停在续列上。理由:应用(zsh/zle、vim)按自己的列模型发**相对**位移,终端若"帮忙"多挪一列,两边就此错开,后续擦除/重写落错格,劈开宽字对 —— 症状是"纯输入正常、一编辑整行就乱"。`vt.odin` 中不得出现读 `cell.cp/wide` 来调整光标的代码(唯一的宽字处理在写入路径:写窄字覆盖半个宽字对时把另一半清成空白)。
 

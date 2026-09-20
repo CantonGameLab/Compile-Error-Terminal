@@ -706,7 +706,10 @@ ConsoleExitReview :: proc(id : mem.Handle = {}) -> bool {
 	return exitReview(console)
 }
 
-// review 退出的唯一写点(输入 / 命令 / 将来入口都走这里)
+// 用户动作的唯一写点(按键输入 / review-exit 命令 / 将来入口都走这里):
+//   退出 review 回实时 + **取消选区**。
+// 两者是同一条用户语义 —— "我动手了":动键盘就是新的输入,历史查看与选区都不该继续。
+// 因此不需要在内容写路径上做任何选区平移/自愈(见 selection.odin 的生命周期说明)。
 exitReview :: proc(console : ^Console) -> bool {
 	tb := GetTermBuffer(console.active_term_buffer_id)
 	if tb == nil {
@@ -714,6 +717,7 @@ exitReview :: proc(console : ^Console) -> bool {
 	}
 	tb.review_top, tb.review_off = 0, 0
 	tb.screen_dirty = true // 锚点变了 ⇒ 屏幕行表重建
+	SelectionClear()       // 按键输入即取消选区(常规终端行为)
 	return true
 }
 
