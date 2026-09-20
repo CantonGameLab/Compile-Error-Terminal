@@ -1,5 +1,7 @@
 # CompileErrorTerminal (CETerm)
-CompileErrorTerminal 是一个由Odin Programming Language编写的高性能Windows终端开源模拟器 相较于已有的Alacritty, Kitty等终端模拟器 CompileErrorTerminal具备灵活的分屏分页功能 对每个窗口及其Console分别维护相关的状态 同时 我们还具备一个及其强大的Command-Userapi系统架构 通过这个架构 你可以使用ceterm脚本来实现几乎任何终端行为 同时 从代码上来看 CompileErrorTerminal 的架构简单清晰 具有很高的可拓展性 且得益于Odin Programming Language强大的编译器 我们的程序构建也非常简单 如果是构建一个最简单的实例 只需一个 odin build * 指令即可 对于开发者来讲是非常友好且方便的 
+CompileErrorTerminal 是一个由Odin Programming Language编写的高性能Windows终端开源模拟器 由广州游戏实验室下的CompileError工作室发起 
+
+相较于已有的Alacritty, Kitty等终端模拟器 CompileErrorTerminal具备灵活的分屏分页功能 对每个窗口及其Console分别维护相关的状态 同时 我们还具备一个及其强大的Command-Userapi系统架构 通过这个架构 你可以使用ceterm脚本来实现几乎任何终端行为 同时 从代码上来看 CompileErrorTerminal 的架构简单清晰 具有很高的可拓展性 且得益于Odin Programming Language强大的编译器 我们的程序构建也非常简单 如果是构建一个最简单的实例 只需一个 odin build * 指令即可 对于开发者来讲是非常友好且方便的 
 
 CompileErrorTerminal同Alacritty Kitty这些高性能终端模拟器一样 采用图形接口进行渲染 但是CompileErrorTerminal同时还提供了一个阻塞模式 开启阻塞模式之后 Terminal会进行响应式的渲染和运行 最大程度上的减少了运行资源消耗 同时对于用户体验几乎没有什么影响 
 
