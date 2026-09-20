@@ -285,6 +285,33 @@ screenRowFor :: proc(console : ^Console, tb : ^TermBuffer, line : int) -> int {
 	return -1
 }
 
+// 内容位置(逻辑行 + 行内**绝对列**)→ 屏幕行;-1 = 不在当前窗口里(调用方自行夹边界)。
+// 与 screenRowFor 的区别:这个定位到**那一段**。一条逻辑行占多段时行级只能给第一段,
+// 而"把光标重定回它写的那一段"必须段级(cols 变化后段边界跟着变,见 applyConsoleSize)。
+// line ≥ len(lines) = 内容之后(空白区):给第一行"内容之外"的屏幕行。
+screenRowForPos :: proc(console : ^Console, tb : ^TermBuffer, line, pos : int) -> int {
+	screenEnsure(console, tb)
+	if tb == nil || line < 0 {
+		return -1
+	}
+	if line >= len(tb.lines) {
+		for e, r in tb.screen {
+			if int(e.line) >= len(tb.lines) {
+				return r
+			}
+		}
+		return -1
+	}
+	cells := lineContent(tb.lines[line].cells[:])
+	off := segmentStartAt(cells, max(1, int(console.cols)), pos)
+	for e, r in tb.screen {
+		if int(e.line) == line && int(e.offset) == off {
+			return r
+		}
+	}
+	return -1
+}
+
 // 公开入口(跨包读侧:render 用;形态与 ConsoleViewportTop 一致)
 ConsoleScreenLine :: proc(console_h : mem.Handle, r : int) -> int {
 	console := GetConsole(console_h)

@@ -453,7 +453,11 @@ CreateTermBuffer(...) / DestroyTermBuffer(h) / GetTermBuffer(h)
 
 **擦除语义(ED,宿主实现 clear 走这条)**:`ED 0/1/2` 只作用于**可视窗**(行数组尾部 `rows` 行),不碰历史、不动光标;`ED 3`(`ESC[3J`)= **Erase Saved Lines**,只丢可视窗**之上**已滚出的历史(`cutHistoryHead(screenBase)`),**可视屏内容与光标屏幕行都不许变**。曾经的实现是 `ED 3 → TermBufferClear`,行数组清空而 `cursor_row` 留在原处 —— 下一次写入把数组补空行补回那一行,提示符的屏幕行就等于"清屏那一刻攒下的历史长度"(实测宿主对 `clear` 发的正是 `\e[H\e[2J\e[3J`):历史长则提示符沉到屏幕底部、历史短则停在中间或顶部,同一个 `clear` 每次落点不同。
 
-**光标在屏上(不变式,已结构化)**:`cursor_row` **就是屏幕行**(0..rows-1),所以"光标在视口内"不再是一条需要守的不变式 —— 它由坐标语义直接保证(旧模型里 `cursor_row` 是物理行、可落到窗口之上,才需要额外守)。resize 时按"先换算成尺寸无关的内容行、再落回新窗"重算:`applyConsoleSize` 里 `content_row = screenBase + cursor_row`,窗口变矮后若内容行落到窗之上,按真实终端语义丢掉新屏装不下的**底部**行(通报选区平移),光标成为窗顶。
+**光标在屏上(不变式,已结构化)**:`cursor_row` **就是屏幕行**(0..rows-1),所以"光标在视口内"不再是一条需要守的不变式 —— 它由坐标语义直接保证(旧模型里 `cursor_row` 是物理行、可落到窗口之上,才需要额外守)。
+
+**resize 时按内容重定光标屏行(尺寸无关量 = 逻辑行 + 行内绝对列)**:`applyConsoleSize` 在改尺寸**之前**取 `(cursor_line, cursor_pos) = (光标所在逻辑行, off + cursor_col)`——只存段首不够,`cols` 一变段边界跟着变,老段首在新网格里可能落在段中间,只有写入路径的绝对列 `at = off + col` 是尺寸无关的;改完尺寸用 `screenRowForPos`(段级查表,行级 `screenRowFor` 只能给一条逻辑行的第一段)把光标落回新屏行,列换成新段内的列。**不重定的后果**(用户实测):字号变大 ⇒ 列宽变小 ⇒ 长行多折出一段,内容整体往下长一格,而 `cursor_row` 还指着老行 ⇒ shell 收到 `SIGWINCH` 重画提示行的那一笔落在 `dir` 列表**中段**,列表被写花(截图里 `Dev  「…」od  Recent` 这种形态)。内容不在窗口里(在锚点之前/之后)才夹到顶/底;光标内容落到窗之上时按真实终端语义丢掉新屏装不下的**底部**行,光标成为窗顶。两个细节:① 地址落在段外(光标停在行内容末尾、新网格这一段装不下)⇒ 停在该段末列 + `wrap_pending`(与写入路径同一编码),否则那一笔覆盖行尾字符;② 光标段缓存要**直接写成**重定后的那一段,不能一律 `cursorSegmentInvalidate` —— 折行推进靠缓存里"同一逻辑行"的知识,失效态下的惰性重查会按新屏行取段(实测:缩到 1 列后写 `d` 落到新行而不是接着 `abc` 后面)。
+
+**`applyConsoleSize` 同尺寸 = no-op(几何没变就别动 VT 状态)**:`ConsoleUpdateLayout` **每帧**都会调它(`layoutWalk`),所以开头用 `rows/cols` 相同直接返回。这不只是省开销 —— 里面的"清 `wrap_pending`"和"重置滚动区"每帧做一次会踩两个坑(实测):① 抹掉"写满最后一列、等下一字符折行"的状态 ⇒ 下一个字符**覆盖末列**(4 列写完 `abcd` 再写 `e` → `abce`,不是折到下一行);② 把应用用 `DECSTBM` 设的滚动区重置成全屏(`1..3` → `1..5`),vim 那类 TUI 当场失效。验收:`playground/resizecursor/`(20 项:光标内容位置跨 resize 不变、提示行重画落点、行尾续写追加、同尺寸 layout 不动状态)。
 
 **选区数据模型(两条规则,故意做薄)**:`Selection` 存 buffer `(行, 列)` 区间(逻辑列,`SelectionPoint`)+ 所属 buffer/宿主 console。
 - **按键输入即取消**:唯一入口在 `exitReview`(它同时是"退出 review"与"用户动作"的唯一写点;`FeedConsole` 与 `ConsoleExitReview` 都走它)⇒ 不在内容写路径里做任何选区平移/自愈。

@@ -357,31 +357,45 @@ viewportTop :: proc(console : ^Console, tb : ^TermBuffer) -> int {
 	return line
 }
 
-// 改网格尺寸的副作用:cursor_col/滚动区下限 clamp + **光标屏幕行重算** + review 锚定补偿。
+// 改网格尺寸的副作用:**光标按内容重定屏行** + cursor_col/滚动区下限 clamp + review 锚定补偿。
 // 锚定规则(同 alacritty):普通(贴底)保持贴底;review 保持视口内容(顶行)不动。
-// 光标是**屏幕坐标**(见 Console.cursor_row),尺寸一变就必须重算:先换算成尺寸无关的
-// 内容行,再按新窗口落回屏幕行;内容行落到新窗之上时,按真实终端语义丢掉新屏装不下的
-// **底部**行,让光标成为窗顶(与老实现同一行为 —— 那时 cursor_row 是物理行,砍的是它下面的行)。
+// 光标是**屏幕坐标**(见 Console.cursor_row),尺寸一变就必须重定:先换算成尺寸无关的
+// 内容位置(逻辑行 + 行内绝对列),再按新网格落回屏幕行;内容落到新窗之上时,按真实
+// 终端语义丢掉新屏装不下的**底部**行,让光标成为窗顶(与老实现同一行为 —— 那时
+// cursor_row 是物理行,砍的是它下面的行)。
 applyConsoleSize :: proc(console : ^Console, rows, cols : u16) {
+	// 每帧都会被 ConsoleUpdateLayout 调到(尺寸通常没变)⇒ 同尺寸 = no-op。
+	// 这不只是省开销:下面的副作用里有"清 wrap_pending"和"重置滚动区",每帧做一次会
+	//   · 抹掉"写满最后一列、等下一字符折行"的状态 ⇒ 下一个字符**覆盖末列**
+	//     (实测 4 列写完 "abcd" 再写 "e" → "abce",不是折到下一行);
+	//   · 把应用用 DECSTBM 设的滚动区重置成全屏(实测 1..3 → 1..5),vim 那类 TUI 当场失效。
+	if console.rows == rows && console.cols == cols {
+		return
+	}
 	tb := GetTermBuffer(console.active_term_buffer_id)
-	visible_top_before := 0 // 活窗口顶行(裁剪判定用)
-	content_line := 0 // 光标所在**逻辑行**(尺寸无关)
+	// 尺寸无关的两个量,必须在改尺寸**之前**取:
+	//   · 光标的内容位置。只存 (行, 段首) 不够 —— cols 一变段边界跟着变,老段首在新
+	//     网格里可能落在段中间;只有"行内绝对列"(off + cursor_col = 写入路径的 at)尺寸无关。
+	//   · 活窗口顶行(裁剪判定用)
+	cursor_line, cursor_pos := 0, 0
+	visible_top_before := 0
 	if tb != nil {
+		off := 0
+		cursor_line, off = cursorSegment(console, tb)
+		cursor_pos = off + int(console.cursor_col)
 		visible_top_before, _ = viewportAnchorLive(console, tb)
-		content_line, _ = cursorSegment(console, tb)
 	}
 
 	console.rows, console.cols = rows, cols
 	console.cursor_col = min(console.cursor_col, cols - 1)
 	console.vt.scroll_bottom = rows - 1
 	console.vt.wrap_pending = false
-	cursorSegmentInvalidate(console) // 几何变了:光标段下一次写入时重查
 
 	if tb != nil {
 		// 光标的内容行落到**活窗口**之上 ⇒ 按真实终端语义丢掉新屏装不下的底部行,
 		// 让光标成为窗顶(与老实现同一行为)。
-		if content_line < visible_top_before {
-			keep := content_line + int(rows)
+		if cursor_line < visible_top_before {
+			keep := cursor_line + int(rows)
 			if keep < len(tb.lines) {
 				n := len(tb.lines) - keep
 				for i in keep ..< len(tb.lines) {
@@ -390,7 +404,46 @@ applyConsoleSize :: proc(console : ^Console, rows, cols : u16) {
 				remove_range(&tb.lines, keep, keep + n)
 			}
 		}
+		// 新列宽下内容重排(一条逻辑行占几段变了)⇒ 光标必须按**内容**重定屏行:老的
+		// cursor_row 指的是老网格里的那一段,重排后它已经是别的内容。不重定,下一次写入
+		// (shell 收到 resize 会重画提示行)就落在列表中段,把内容写花。
 		tb.screen_dirty = true
+		r := screenRowForPos(console, tb, cursor_line, cursor_pos)
+		if r < 0 {
+			// 内容不在窗口里:在锚点之前 = 上方(夹到顶),否则在下方(夹到底)
+			anchor_line, anchor_off := viewportAnchor(console, tb)
+			above := cursor_line < anchor_line || (cursor_line == anchor_line && cursor_pos < anchor_off)
+			r = above ? 0 : int(rows) - 1
+		}
+		console.cursor_row = u16(clamp(r, 0, int(rows) - 1))
+		// 列也要换成**新段**里的列:段首变了,段内偏移跟着变。
+		// 地址落到段外(光标停在行内容末尾、新网格这一段装不下它)⇒ 停在该段末列并置
+		// wrap-pending —— 与写入路径同一编码("光标停在末列等折行"),下一个字符先折行再写;
+		// 不这么做,那一笔会**覆盖行尾最后一个字符**(实测:width 1 时 DCH 清错格)。
+		new_off, col := 0, 0
+		if cursor_line < len(tb.lines) {
+			cells := lineContent(tb.lines[cursor_line].cells[:])
+			new_off = segmentStartAt(cells, max(1, int(cols)), cursor_pos)
+			col = clamp(cursor_pos - new_off, 0, int(cols) - 1)
+			if cursor_pos - new_off >= int(cols) {
+				console.vt.wrap_pending = true
+			}
+		}
+		console.cursor_col = u16(col)
+		// 光标段缓存:表里就是那一段 ⇒ 直接把缓存写成它(维持"缓存 = 光标段")。
+		// 不能一律 invalidate —— 折行推进(cursorSegmentNextSegment)靠缓存里"同一逻辑行"的
+		// 知识,失效态下的惰性重查会按**新**屏行取段,把行号取成下一行(实测:缩到 1 列后
+		// 写 "d" 落到新行,而不是接着 "abc" 后面)。夹过边界时表里没有那一段,只能作废重查。
+		if r >= 0 {
+			console.cursor_line = u32(cursor_line)
+			console.cursor_off = u32(new_off)
+			console.cursor_seg_row = console.cursor_row
+			console.cursor_seg_ok = true
+		} else {
+			cursorSegmentInvalidate(console)
+		}
+	} else {
+		cursorSegmentInvalidate(console)
 	}
 
 	// review 锚点是**顶行**编码(锁左上角那块内容),rows 变化不需要重定它;
