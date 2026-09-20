@@ -1,0 +1,40 @@
+// CompileErrorTerminal (CETerm) — 可执行文件资源脚本。
+//
+// 作用:把图标和版本信息编进 ceterm.exe。这决定了资源管理器、任务栏、Alt-Tab
+// 以及"属性 → 详细信息"里看到的东西 —— 开发构建(odin build src/)不带它,
+// 所以开发期 exe 是默认图标,这是预期行为。
+//
+// 编入方式(仓库根目录):
+//     odin build src/ -out:build/ceterm.exe -resource:ceterm.rc
+// 需要 PATH 里有 llvm-rc 或 Windows SDK 的 rc.exe(Odin 会调用其中之一)。
+//
+// 图标路径相对资源编译器的工作目录 = 仓库根,见 resource/icon/。
+// 版本号需与发布版本同步(将来由 build.ps1 统一注入)。
+
+1 ICON "resource/icon/ceterm.ico"
+
+1 VERSIONINFO
+FILEVERSION     0,1,0,0
+PRODUCTVERSION  0,1,0,0
+FILEOS          0x40004   // VOS_NT_WINDOWS32
+FILETYPE        0x1       // VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "080404b0"      // 语言 0x0804(简体中文) + 代码页 0x04b0(1200 = Unicode)
+    BEGIN
+      VALUE "CompanyName",      "Canton Game Lab"
+      VALUE "FileDescription",  "CompileErrorTerminal (CETerm)"
+      VALUE "FileVersion",      "0.1.0.0"
+      VALUE "InternalName",     "ceterm"
+      VALUE "LegalCopyright",   "Copyright (C) 2026 Canton Game Lab. GPL-3.0-only."
+      VALUE "OriginalFilename", "ceterm.exe"
+      VALUE "ProductName",      "CompileErrorTerminal"
+      VALUE "ProductVersion",   "0.1.0.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x804, 1200
+  END
+END
