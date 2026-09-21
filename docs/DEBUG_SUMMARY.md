@@ -66,7 +66,8 @@
 1. **写满最后一列立即折行**——xterm 语义是写满后停在最后列,下一字符才折行(自动换行等待)
 2. **任何 CSI(含 SGR)都取消 pending**——nvim 的 eob 绘制依赖"写满 + 改色(SGR) + `~` 折行",SGR 不能取消等待
 
-**修复**:`VtState.wrap_pending` 字段;`ConsoleWriteRune` 写满置 pending,下一字符折行(抽出 `vtWrapOnce`);只有光标移动类操作(CUP/CUU/CUD/CUF/CUB/CHA/VPA/HPA/VPR/HPR/DECRC/BS/TAB/CR)清 pending;SGR/擦除/模式/应答不清;LF 不清(写满后 LF 下移、下一字符仍折行)。
+**修复**:`VtState.wrap_pending` 字段;`ConsoleWriteRune` 写满置 pending,下一字符折行(抽出 `vtWrapOnce`);光标移动类操作(CUP/CUU/CUD/CUF/CUB/CHA/VPA/HPA/VPR/HPR/DECRC/BS/TAB/CR)清 pending;SGR/模式/应答不清。
+(后修正:LF/IND/RI 与 EL/ED/ECH/DCH/ICH/IL/DL 也清 pending —— xterm 源码里 index 走 `CursorDown`、RI 走 `CursorUp`,这些函数与擦除/插删类一样都调 `ResetWrap`;见 B8。)原实现"LF 不清"会让"写满末列 + LF + 写字"多下移一行、白出一空行。
 
 **验证**:nvimtest 断言:80 空格 + SGR + `~` → `~` 在下一行行首;CR 取消 pending。
 
@@ -129,6 +130,30 @@
 
 **验证**:yazi 抓取出现 156 个颜色 SGR(38;5;4 蓝、38;2;3;169;244 青、48;5;4 蓝底等),回放正确。
 
+### B8. 底部软折行/回车产生多余空行(折行逻辑与光标段缓存)
+
+**现象**(用户报告"莫名其妙出现很多多余的空行"):屏幕底行的内容一折行,正文就整体上浮、下面多出等量空行;回车后提示符落在一串空行之上;某些序列(EL 补齐后回车、进交替屏、SU、RIS/DECCOLM)之后内容整块错位。用 `playground/wrapcheck/` 逐条复现(5×10 面板):
+
+| 场景 | 旧行为 | 新行为 |
+|---|---|---|
+| 底行输入 25 字符 | 内容行 5 条 → 7 条(2 空行),正文占屏 0..2、光标在空行 4 | 5 条,正文占 2..4,光标紧跟行尾 |
+| `eeeab` + `ESC[K` + 回车 | 拆出一条纯补齐空白的行,PROMPT 与内容之间多一行 | 回车直接进下一行,无空白行 |
+| 区域滚动内折行 | 新行以空格开头(off 凭空 +1) | 从段首写起 |
+| 滚屏后回顶写 + 进交替屏 | 空页被补出 5 条空行,X 落在第 6 行 | 空页 1 行,X 在第一行 |
+| 滚屏后回顶写 + `ESC[S` | 后续写入落在已滚出视口的行上(屏上无变化) | 写进光标所在屏行 |
+| 内容未满屏 + CUP 到第 5 行写 | 字写在第 3 行、光标框留在第 5 行 | 字与光标都在第 5 行 |
+| 写满末列 + 裸 LF + 写字 | LF 下移后 pending 又折一次,多一空行/前导空白 | LF 清 pending,字符写在新行的原列(xterm) |
+| 写满末列 + `ESC[K` + 写字 | 折到下一行 | 原列覆盖(xterm) |
+
+**根因**:
+1. **全屏软折行借道 `vtScrollUp`**:全屏上滚的实现是"行数组尾部 append 一条空行";软折行其实只是同一逻辑行多长一段,而活窗口贴底(`viewportAnchorLive` 取内容尾部),追加的空行必然被显示在底行 ⇒ 每折一次多一空行。软折行路径改为不 append —— 紧随的写入让逻辑行多长一段,活窗口自然把顶段挤出,与"`cursor_row` 不变"自洽;区域滚动仍走 `vtScrollUp`(区内按行搬移)。
+2. **"本行走完"按 `len(cells)` 判定**:EL/ED 会把行补齐到 `cols`,补齐空白不是内容;回车被当成"行内硬断点",在内容末尾 `splitLineAt` 拆出一条全空白的行。改用 `LineExtent`(内容长度)。
+3. **`cursorSegmentNextSegment` 用 `max(1, SegmentLen)`**:空行返回 0 也前进一格,区域滚动后落在新插入空行上的第一笔带前导空格;改成 `n > 0` 才前进。**`cursorSegmentRefresh` 对内容之后的屏幕行饱和成 `len(lines)`**:写入全挤到内容末尾(光标在第 5 行、字出现在第 3 行)。空白区映射改为"末尾之后第 `r - 空白区首行` 条新行"。
+4. **光标段缓存失效面不全**:命中写入路径的 `cursorSegment` 有"屏幕行变了就重查"的守卫,但 LF/折行推进与切页不经过它 —— `ConsoleAttach/ActivateTermBuffer`(1049)、`TermBufferClear`(RIS/DECCOLM)、`SU` 全屏上滚都要显式作废;`CUP` 之后未写入就 LF 时,缓存还属于旧行 ⇒ `vtLf` 先按当前行同步一次(有 review 视口时不查表,避免写进回看内容)。
+5. **`wrap_pending` 与 xterm 不符**:见 B2 后修正。LF/IND/RI 清 pending;EL/ED(0/1/2)/ECH/DCH/ICH/IL/DL 清 pending;SGR/模式/应答不清(nvim eob 依赖后者)。
+
+**验证**:`playground/wrapcheck/`(本地探针,18 组场景回归;`playground/` 已在 .gitignore)。
+
 ---
 
 ## 3. 架构发现:ConPTY 的 conhost 拦截
@@ -161,22 +186,23 @@
 
 ### 写入/折行
 2. **wrap-pending**:写满最后一列,光标停最后一列置 pending;**下一个可打印字符**才折行
-3. **SGR 不取消 pending**:改色后再写字符仍折行(nvim eob 依赖);只有光标移动类操作清 pending
-4. **宽字符占 2 列**:EAW=W/F 字符(`runeWidth`),续列 cell 继承样式;最后列放不下先折行;BS/CUB/CUF 跳过续列
-5. **空白格 = 默认样式**:任何方式创建的空 cell 必须 `fg/bg = DEFAULT_COLOR`,零值 `bg=0` 会被渲染成黑色块
+3. **谁清 pending(xterm `ResetWrap` 口径)**:光标移动类(CUP/CUU/CUD/CUF/CUB/CHA/VPA/HPA/VPR/HPR/DECRC/BS/TAB/CR)、LF/IND/RI、EL/ED 0-2/ECH/DCH/ICH/IL/DL 都清;**SGR/模式/应答不清**(nvim eob 依赖"写满 + 改色 + 字符折行")
+4. **全屏软折行不 append 空行**:底行折行靠逻辑行多长一段把顶段挤出活窗口(视口贴底推导);只有 LF/SU 这类"下移到新行"才 append 空行(见 B8)
+5. **宽字符占 2 列**:EAW=W/F 字符(`runeWidth`),续列 cell 继承样式;最后列放不下先折行;BS/CUB/CUF 跳过续列
+6. **空白格 = 默认样式**:任何方式创建的空 cell 必须 `fg/bg = DEFAULT_COLOR`,零值 `bg=0` 会被渲染成黑色块
 
 ### 擦除
-6. **擦除带背景**:EL/ED/ECH 擦除区域用当前 SGR 背景色填充(补全窗口矩形依赖)
-7. **行定宽**:EL/ED/ECH 把行扩展到 `cols` 再擦除
+7. **擦除带背景**:EL/ED/ECH 擦除区域用当前 SGR 背景色填充(补全窗口矩形依赖)
+8. **行定宽**:EL/ED/ECH 把行扩展到 `cols` 再擦除
 
 ### 模式
-8. **DECCOLM(`?3h`)**:清屏、光标 home、滚动区重置、132 列布局固定
-9. **DECOM(`?6h`)**:定位相对滚动区顶、限制在区内;DECSTBM 联动 home
-10. **交替屏(1049)**:进出保存/恢复光标 + 滚动区,进入时滚动区重置全屏
+9. **DECCOLM(`?3h`)**:清屏、光标 home、滚动区重置、132 列布局固定
+10. **DECOM(`?6h`)**:定位相对滚动区顶、限制在区内;DECSTBM 联动 home
+11. **交替屏(1049)**:进出保存/恢复光标 + 滚动区,进入时滚动区重置全屏
 
 ### 应答
-11. **DSR 报屏幕坐标**(物理行 - 可视区顶部),不报物理行
-12. `ESC[?u`/`ESC[?6n` 应答 `ESC[?r;cR`;`ESC[18t` 应答 `ESC[8;rows;colst`;`ESC[?u` 不能被当成 restore-cursor
+12. **DSR 报屏幕坐标**(物理行 - 可视区顶部),不报物理行
+13. `ESC[?u`/`ESC[?6n` 应答 `ESC[?r;cR`;`ESC[18t` 应答 `ESC[8;rows;colst`;`ESC[?u` 不能被当成 restore-cursor
 
 ---
 

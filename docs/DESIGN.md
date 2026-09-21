@@ -442,8 +442,9 @@ CreateTermBuffer(...) / DestroyTermBuffer(h) / GetTermBuffer(h)
 - **阶段2(已落地,逻辑行 + 屏幕段)**:
   - 内容:`Line` = **逻辑行**(只有硬换行才开新行,长度可远超 cols);`wrapped` 标记**已删除** —— 软折行 = 同一行、硬换行 = 不同行,结构自己说明,段划分由 `SegmentLen`/`LineSegments`/`SegmentStart` 从内容**派生**(宽字对不跨段)。
   - 内容长度:`LineExtent` = 末尾空白之外的正文长度(`lineContent` 视图)。段数/锚点/推进一律按它算 —— 否则 EL/ED 补齐的空白会被当成内容(1 列下 "abc"+77 空白 = 80 段,窗口锚到行尾空白)。
-  - 写入热路径:**光标段缓存** `Console.cursor_line/cursor_off/cursor_seg_ok/cursor_seg_row`。软折行用 `cursorSegmentNextSegment`(留在同一行,off += 段长,O(1));LF 用 `cursorSegmentNextLine`(本行走完才换行);缓存靠"屏幕行号变了就作废"自动覆盖所有光标跳转,不必在每个 VT 分支里撒失效。
-  - 硬换行:`LF` = 下移一段(内容不动);**列 0 上的 LF(= CR+LF)** 若落在逻辑行内部,按**段边界**拆行(`splitLineAt`)把硬断点记进结构 —— 段边界保证画面不动。
+  - 写入热路径:**光标段缓存** `Console.cursor_line/cursor_off/cursor_seg_ok/cursor_seg_row`。软折行用 `cursorSegmentNextSegment`(留在同一行,off += 段长,O(1);`SegmentLen == 0` 时 off 不动,否则空行上会凭空前进一格);LF 用 `cursorSegmentNextLine`(本行走完才换行,"走完"按 `LineExtent` 内容长度,不含 EL/ED 补齐的空白)。缓存的失效:写入路径靠"屏幕行号变了就重查";**切页(1049)/清空(RIS/DECCOLM)/SU 全屏上滚显式作废**;LF 在行号不符时先按当前行同步一次(CUP 不清缓存,但下一笔写入或 LF 会重查)。内容下方空白区的屏幕行映射到"末尾之后第 `r - 空白区首行` 条新行"(光标在那里写入时按屏行补齐,不是全挤在内容末尾)。
+  - 硬换行:`LF` = 下移一段(内容不动)、**清 `wrap_pending`**(xterm 的 index 走 `CursorDown`);**列 0 上的 LF(= CR+LF)** 若落在逻辑行内部,按**段边界**拆行(`splitLineAt`)把硬断点记进结构 —— 段边界保证画面不动。
+  - 全屏软折行:**不 append 空行** —— 同一逻辑行多长一段就把活窗口的顶段挤出(视口贴底推导),底段即光标段;只有 LF/SU 这类"下移到新行"才 append 空行。逐段底折行/空行问题的复现与修复见 `docs/DEBUG_SUMMARY.md` B8。
   - 段内操作:EL/ECH/ICH/DCH 只在 `[off, off+cols)` 内动;`sanitizeWidePairs(line, from, to)` 段口径。
   - 屏幕级操作:ED 逐屏幕行取段擦(`clearScreenRow`);IL/DL/SU/SD 先 `splitRowsInRegion` 把滚动区内每个屏幕行拆成一条行(长行可按段拆,画面不变),再做行级搬移。
   - 失效:`screen_dirty` 取代快照比较(写路径/几何/review/裁剪/清空就地置位);`screenEnsure` 另加 `len(screen) == rows` 兜住零值初始态。
