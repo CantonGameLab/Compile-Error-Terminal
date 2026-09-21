@@ -426,45 +426,30 @@ ConsoleActivateTermBuffer(h, buffer_h) / ConsoleAttachTermBuffer(h, buffer_h)
 CreateTermBuffer(...) / DestroyTermBuffer(h) / GetTermBuffer(h)
 ```
 
-- **历史滚动数据模型(单真值,顶行锚定)**:`TermBuffer.review_top` / `review_off`
-  - `review_top = 0` = 活窗口(贴底跟随,窗口顶段由 `viewportAnchorLive` 从内容尾部回退 `rows` 段推出)
-  - `review_top = n (1..)` = review,窗口**顶行** = `lines[n-1]` 的第 `review_off` 段起 —— **内容坐标**,resize/重排天然稳定
-  - 为什么不用底行编码:底行每次都要拿 `rows` 反推顶行,而"一行占几段"随 `cols` 变,段模型下反推不成立
-  - 平移原语:`ViewportAnchorShift(tb, cols, line, off, delta)` 按**屏幕段**前后走(`ConsoleScroll` 用它;越界停在内容首/末);滚到活窗口顶 ⇒ `review_top = 0` 回最新
-  - 推导唯一入口:`viewportAnchor(console, tb)`(review 用锚点,否则活窗口);渲染/应答/resize/裁剪共用
+- **历史滚动数据模型(单真值,顶行锚定)**:`TermBuffer.review_top`
+  - `review_top = 0` = 活窗口(贴底跟随,视口顶行 = `len(lines) - rows`)
+  - `review_top = n (1..)` = review,视口顶行 = `lines[n-1]`(物理行号,绝对锚定:新输出不动)
+  - 平移:`ConsoleScroll` 直接按行加减(base ± delta,clamp 到 [0, live]);滚到活窗口顶 ⇒ `review_top = 0`
+  - 推导唯一入口:`viewportBase(console, tb)`(review 用锚点,否则活窗口);渲染/选区/鼠标/resize/裁剪共用
 
-**屏幕行表(屏幕坐标 ↔ 缓冲坐标的唯一换算入口)**:`TermBuffer.screen` —— `rows` 项的 `ScreenRow{line, offset}`,由 `screenEnsure(console, tb)` 建/重算;读侧(渲染 / 选区 / 鼠标 / CPR / IME / `ConsoleLineText`)一律走 `screenLineAt` / `screenRowFor`,跨包入口 `ConsoleScreenLine` / **`ConsoleScreenSegment`**(返回 `(line, offset)`,渲染按段画)/ `ConsoleScreenRow`,**不许再出现 `top + r` 这种散落算术**。
-- **光标本身就是屏幕坐标**(`Console.cursor_row/col`,VT 状态的地址空间):行 0..rows-1、列 0..cols-1。内容行由写入路径换算(`screenBase + cursor_row`,阶段2 换成查表拿 `(line, offset)`);因此 `CUU/CUD/CUP/VPA/DECSTBM/DECOM/IND/RI/DSR` 全部退化成纯屏幕算术,不再做 `± base` 的来回换算。
-- **写入路径用算术、读侧用表**:表只服务读侧 —— 否则每落一格就要重建一次 `rows` 项。
-- **表归 buffer(内容层)**:表的形状由内容长度决定(阶段2 起一条逻辑行可占多个屏幕行),失效源就是 buffer 的写路径 ⇒ 就地失效;交替屏各持一张表 ⇒ **切页零失效逻辑**。建表仍要"屏幕多高",那是窗格几何 ⇒ 入口签名 `screenEnsure(console, tb)`:参数取几何,状态存 tb。
-- **失效 = `screen_dirty`**:内容长度进了推导(一行占几段由内容决定),没有便宜的"输入快照比较"可用了 ⇒ 由写路径/几何/review/裁剪/清空**就地置位**,`screenEnsure` 消费并清除;另加 `len(screen) == rows` 兜住"新建但零值状态说自己是干净的"这一初始态。
-- **内容之外的行 = 饱和在 `len(lines)`(不是伪造行号)**:表对内容用尽之后的屏幕行一律给 `line = len(lines)`。**读方必须在索引 `lines` 前判界** —— 这条约定踩过坑:`mouse.odin` 的悬停命中里,`LineWidth(tb.lines[line].cells[:], …)` 落在边界检查之外,而那个分支只在有选区时进入 ⇒ 一选区、鼠标移到内容下方空白区就索引越界 panic(且 `-subsystem:windows` 把 panic 文本吞了,表现为"程序直接退出、没有报错")。凡是从屏幕行表取值后索引 `lines` 的地方,一律先 `line_ok := line >= 0 && line < len(tb.lines)`。
-- **阶段2(已落地,逻辑行 + 屏幕段)**:
-  - 内容:`Line` = **逻辑行**(只有硬换行才开新行,长度可远超 cols);`wrapped` 标记**已删除** —— 软折行 = 同一行、硬换行 = 不同行,结构自己说明,段划分由 `SegmentLen`/`LineSegments`/`SegmentStart` 从内容**派生**(宽字对不跨段)。
-  - 内容长度:`LineExtent` = 末尾空白之外的正文长度(`lineContent` 视图)。段数/锚点/推进一律按它算 —— 否则 EL/ED 补齐的空白会被当成内容(1 列下 "abc"+77 空白 = 80 段,窗口锚到行尾空白)。
-  - 写入热路径:**光标段缓存** `Console.cursor_line/cursor_off/cursor_seg_ok/cursor_seg_row`。软折行用 `cursorSegmentNextSegment`(留在同一行,off += 段长,O(1);`SegmentLen == 0` 时 off 不动,否则空行上会凭空前进一格);LF 用 `cursorSegmentNextLine`(本行走完才换行,"走完"按 `LineExtent` 内容长度,不含 EL/ED 补齐的空白)。缓存的失效:写入路径靠"屏幕行号变了就重查";**切页(1049)/清空(RIS/DECCOLM)/SU 全屏上滚显式作废**;LF 在行号不符时先按当前行同步一次(CUP 不清缓存,但下一笔写入或 LF 会重查)。内容下方空白区的屏幕行映射到"末尾之后第 `r - 空白区首行` 条新行"(光标在那里写入时按屏行补齐,不是全挤在内容末尾)。
-  - 硬换行:`LF` = 下移一段(内容不动)、**清 `wrap_pending`**(xterm 的 index 走 `CursorDown`);**列 0 上的 LF(= CR+LF)** 若落在逻辑行内部,按**段边界**拆行(`splitLineAt`)把硬断点记进结构 —— 段边界保证画面不动。
-  - 全屏软折行:**不 append 空行** —— 同一逻辑行多长一段就把活窗口的顶段挤出(视口贴底推导),底段即光标段;只有 LF/SU 这类"下移到新行"才 append 空行。逐段底折行/空行问题的复现与修复见 `docs/DEBUG_SUMMARY.md` B8。
-  - 段内操作:EL/ECH/ICH/DCH 只在 `[off, off+cols)` 内动;`sanitizeWidePairs(line, from, to)` 段口径。
-  - 屏幕级操作:ED 逐屏幕行取段擦(`clearScreenRow`);IL/DL/SU/SD 先 `splitRowsInRegion` 把滚动区内每个屏幕行拆成一条行(长行可按段拆,画面不变),再做行级搬移。
-  - 失效:`screen_dirty` 取代快照比较(写路径/几何/review/裁剪/清空就地置位);`screenEnsure` 另加 `len(screen) == rows` 兜住零值初始态。
-  - 选区:`screenToBuffer` 返回**逻辑列**(段首 + 段内列);复制按逻辑行,每条行之间就是换行(不再靠 `wrapped` 拼接)。
-  - 历史视口:锚点换成**顶行 + 段**(`review_top`/`review_off`),`ViewportAnchorShift` 按屏幕段平移,`ConsoleScroll` 按屏幕行走(不再按行跳);`applyConsoleSize` 不再重定锚点(只在 `cols` 变时把 `off` 吸附到新的段边界)。
-  - 验收:`playground/reflowcheck/`(变宽并回 / 变窄零丢失 / 硬换行不合并 / CJK 不劈开)、`playground/segcheck/`(分段原语 83 项)、`playground/screenmapcheck/`(**231 项**:表 ↔ 公式等价、跨 buffer 隔离、段平移往返与越界)。
+**逐行网格(屏幕坐标 ↔ 缓冲坐标 = 线性下标)**:一行 = 一个屏幕行。`屏幕第 r 行 ↔ lines[viewportBase + r]`,没有屏幕行表、没有段、没有影子缓存。跨包入口 `ConsoleScreenLine` / `ConsoleScreenSegment`(offset 恒 0,旧段接口保留给渲染)/ `ConsoleScreenRow`。屏幕始终**物化** `rows` 行(create/clear/reflow 补齐,`ensureTermRows`),所以行号一定落在数组内,读侧不再需要"内容之外饱和"的约定。
+- **为什么必须逐行(用户实测的 vim 错乱)**:TUI 会把"自动折行"和"CUP 绝对定位"混用 —— 一行写满后终端自动折到下一物理行,应用随后用 `CUP` 定位到那一行继续画。旧"逻辑行 + 段派生"模型里,同一逻辑行占多个屏幕行,而屏幕行到逻辑行的换算是**派生**的:`CUP 第 2 行` 会落到"下一条逻辑行"而不是刚才的续行,增量重绘立刻把内容写花(visual 模式按 `l` 后出现阶梯状字符 / 自动加行)。物理行模型下自动折行**新开一行**并打 `wrapped` 标记,`CUP` 落点与应用的模型一致。
+- **`Line = {cells, wrapped}`**:`cells` 可短于 `cols`(缺格 = 空白);`wrapped = true` 表示本行是上一行的软折行续行(WT 的 `WasWrapForced` 口径)。维护点:① 自动折行(`vtWrapOnce`)置位;② 硬换行(`LF`/`IND`/`NEL`,光标在列 0)清落点行的位;③ 显式定位到行首覆盖写(不是刚折行过来)清位(应用重绘硬行);④ 整行擦除(EL 2/ED)清位。reflow 只在 `wrapped` 串内合并 —— 硬换行永不并。
+- **写入热路径没有缓存**:光标就是屏幕坐标,目标行 = `liveBase + cursor_row`(`termLineForWrite`,不足补空行),列就是格号。`CUP/CUU/CUD/VPA/DECSTBM/DECOM/IND/RI/DSR` 全部纯屏幕算术。
+- **软折行 = 新行**:写满最后一列置 `wrap_pending`(xterm 延迟折行),下一字符才落行;宽字最后列放不下先折行;列归 0 且落点行打 `wrapped`。
+- **擦除 / 插删**:全部是物理行的 `[0, cols)` 列算术(EL/ECH/DCH/ICH 在光标行内搬移;IL/DL/SU/SD 直接在滚动区行上 remove/insert,不再需要任何拆行预处理;全屏上滚 = 尾部 append 一行,顶行进历史)。
+- **reflow(cols 变化)**:按 `wrapped` 串合并逻辑行 → 按新宽度重切(切点落在宽字首格时整对推到下一行;CJK 不劈开)→ 新串首行保留"非续行"、其余 `wrapped = true`。合并取**内容长度** `LineExtent`(末尾空白/EL 补齐不算内容,否则变窄会按满宽拆出"正文 + 空白行")。光标/选区/review 锚点先取出为 (物理行, 列),reflow 用**流内偏移**(串内前序行长度和 + 列)映射回新网格;`rows` 变化只影响 base 与光标屏行。**所有登记页都重排**(活动页带锚点、非活动页只并/切),否则交替屏期间 resize 后切回主屏会看到旧折行。
+- **`applyConsoleSize` 同尺寸 = no-op**:`ConsoleUpdateLayout` 每帧都调它,同尺寸直接返回 —— 否则每帧会清 `wrap_pending`(抹掉"写满末列等折行")并重置应用用 `DECSTBM` 设的滚动区(vim 那类 TUI 当场失效)。
 
-**擦除语义(ED,宿主实现 clear 走这条)**:`ED 0/1/2` 只作用于**可视窗**(行数组尾部 `rows` 行),不碰历史、不动光标;`ED 3`(`ESC[3J`)= **Erase Saved Lines**,只丢可视窗**之上**已滚出的历史(`cutHistoryHead(screenBase)`),**可视屏内容与光标屏幕行都不许变**。曾经的实现是 `ED 3 → TermBufferClear`,行数组清空而 `cursor_row` 留在原处 —— 下一次写入把数组补空行补回那一行,提示符的屏幕行就等于"清屏那一刻攒下的历史长度"(实测宿主对 `clear` 发的正是 `\e[H\e[2J\e[3J`):历史长则提示符沉到屏幕底部、历史短则停在中间或顶部,同一个 `clear` 每次落点不同。
+**擦除语义(ED,宿主实现 clear 走这条)**:`ED 0/1/2` 只作用于**可视窗**(物理行的当前屏),不碰历史、不动光标;`ED 3`(`ESC[3J`)= **Erase Saved Lines**,只丢可视窗**之上**已滚出的历史(`cutHistoryHead(base)`),**可视屏内容与光标屏幕行都不许变**。曾经的实现是 `ED 3 → TermBufferClear`,行数组清空而 `cursor_row` 留在原处 —— 下一次写入把数组补空行补回那一行,提示符的屏幕行就等于"清屏那一刻攒下的历史长度"(实测宿主对 `clear` 发的正是 `\e[H\e[2J\e[3J`):历史长则提示符沉到屏幕底部、历史短则停在中间或顶部,同一个 `clear` 每次落点不同。
 
-**光标在屏上(不变式,已结构化)**:`cursor_row` **就是屏幕行**(0..rows-1),所以"光标在视口内"不再是一条需要守的不变式 —— 它由坐标语义直接保证(旧模型里 `cursor_row` 是物理行、可落到窗口之上,才需要额外守)。
+**resize**:`cols` 变 ⇒ 内容重排(见上);`rows` 变 ⇒ 只重算 base 与光标屏行(内容不够补空行,光标夹进新屏)。resize 的验收(变宽并回 / 变窄零丢失 / 硬换行不合并 / CJK 不劈开 / 光标内容位置不变)固化在 `playground/wrapcheck/`(逐行模型回归探针)。
 
-**resize 时按内容重定光标屏行(尺寸无关量 = 逻辑行 + 行内绝对列)**:`applyConsoleSize` 在改尺寸**之前**取 `(cursor_line, cursor_pos) = (光标所在逻辑行, off + cursor_col)`——只存段首不够,`cols` 一变段边界跟着变,老段首在新网格里可能落在段中间,只有写入路径的绝对列 `at = off + col` 是尺寸无关的;改完尺寸用 `screenRowForPos`(段级查表,行级 `screenRowFor` 只能给一条逻辑行的第一段)把光标落回新屏行,列换成新段内的列。**不重定的后果**(用户实测):字号变大 ⇒ 列宽变小 ⇒ 长行多折出一段,内容整体往下长一格,而 `cursor_row` 还指着老行 ⇒ shell 收到 `SIGWINCH` 重画提示行的那一笔落在 `dir` 列表**中段**,列表被写花(截图里 `Dev  「…」od  Recent` 这种形态)。内容不在窗口里(在锚点之前/之后)才夹到顶/底;光标内容落到窗之上时按真实终端语义丢掉新屏装不下的**底部**行,光标成为窗顶。两个细节:① 地址落在段外(光标停在行内容末尾、新网格这一段装不下)⇒ 停在该段末列 + `wrap_pending`(与写入路径同一编码),否则那一笔覆盖行尾字符;② 光标段缓存要**直接写成**重定后的那一段,不能一律 `cursorSegmentInvalidate` —— 折行推进靠缓存里"同一逻辑行"的知识,失效态下的惰性重查会按新屏行取段(实测:缩到 1 列后写 `d` 落到新行而不是接着 `abc` 后面)。
-
-**`applyConsoleSize` 同尺寸 = no-op(几何没变就别动 VT 状态)**:`ConsoleUpdateLayout` **每帧**都会调它(`layoutWalk`),所以开头用 `rows/cols` 相同直接返回。这不只是省开销 —— 里面的"清 `wrap_pending`"和"重置滚动区"每帧做一次会踩两个坑(实测):① 抹掉"写满最后一列、等下一字符折行"的状态 ⇒ 下一个字符**覆盖末列**(4 列写完 `abcd` 再写 `e` → `abce`,不是折到下一行);② 把应用用 `DECSTBM` 设的滚动区重置成全屏(`1..3` → `1..5`),vim 那类 TUI 当场失效。验收:`playground/resizecursor/`(20 项:光标内容位置跨 resize 不变、提示行重画落点、行尾续写追加、同尺寸 layout 不动状态)。
-
-**选区数据模型(两条规则,故意做薄)**:`Selection` 存 buffer `(行, 列)` 区间(逻辑列,`SelectionPoint`)+ 所属 buffer/宿主 console。
+**选区数据模型(两条规则,故意做薄)**:`Selection` 存 buffer `(物理行, 列)` 区间 + 所属 buffer/宿主 console;锚点随 reflow 一起重排(流内偏移)。
 - **按键输入即取消**:唯一入口在 `exitReview`(它同时是"退出 review"与"用户动作"的唯一写点;`FeedConsole` 与 `ConsoleExitReview` 都走它)⇒ 不在内容写路径里做任何选区平移/自愈。
-- **review 时保持**:选区锚在内容坐标上 ⇒ 翻历史、切页、resize、重排都不影响它。
+- **review 时保持**:选区锚在物理行坐标上,翻历史/切页不动;resize 由 `applyConsoleSize` 随流内偏移重排。
 - 失效只剩两种,都**惰性**判:`SelectionValid()` 检查锚点行是否还在界内(裁剪/清屏之后);`TermBufferClear`(交替屏/整块清屏)直接清。**没有每帧自愈趟**。
-- 行尾口径 = `LineWidth(cells, cols)` = `max(屏幕宽, 内容长度)`:高亮铺满整行(常规观感),长行则覆盖它全部段;文本提取只读真实存在的格(`min(e, len(cells))`)。
+- 文本提取:跨软折行(`wrapped = true`)不插换行,硬换行才写 `\r\n`;行尾口径 `LineWidth(cells, cols)`(物理行恒为屏宽),只读真实存在的格。
 
 **宽字符列算术(不变式)**:光标移动一律**纯算术**,禁止按缓冲内容(宽字续列)修正 —— BS = 列-1,CUB n = 列-n,光标**允许**停在续列上。理由:应用(zsh/zle、vim)按自己的列模型发**相对**位移,终端若"帮忙"多挪一列,两边就此错开,后续擦除/重写落错格,劈开宽字对 —— 症状是"纯输入正常、一编辑整行就乱"。`vt.odin` 中不得出现读 `cell.cp/wide` 来调整光标的代码(唯一的宽字处理在写入路径:写窄字覆盖半个宽字对时把另一半清成空白)。
 

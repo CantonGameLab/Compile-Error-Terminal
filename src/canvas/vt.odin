@@ -596,11 +596,10 @@ vtHandleC0 :: proc(console_h : mem.Handle, b : u8) {
 	}
 }
 
-// LF/IND:光标下移**一段**(屏幕语义)。两条硬换行语义:
-//   · 光标在列 0(CR+LF 的形态)⇒ 光标落在下一段的**段首**,那里就是一条新行的起点;
-//     若该段落在现有逻辑行内部(行还有内容)⇒ 在段首拆行,把"硬换行"记进结构里。
-//   · 光标在列 > 0(裸 LF)⇒ 只下移,内容不动(xterm 的 index 语义)。
-// 内容本身永不因为 LF 被切分。
+// LF/IND:光标下移一行(xterm 的 index 语义:内容不动,只移动光标;到滚动区底则滚屏)。
+//   · 光标在列 0(CR+LF 的形态)= 硬换行:落点行不是软续行 ⇒ 清 `wrapped`
+//     (reflow 时不会把它并进上一行);
+//   · 光标在列 > 0(裸 LF)= 只下移,落点行的软续标记不动。
 // wrap-pending 必须清掉:xterm 的 index 走 CursorDown,而 CursorDown 会 ResetWrap。
 // 不清的后果:写满最后一列后收到 LF,光标已下移一行,下一字符又折一次 —— 白多一空行。
 vtLf :: proc(console_h : mem.Handle) {
@@ -613,12 +612,6 @@ vtLf :: proc(console_h : mem.Handle) {
 	if tb == nil {
 		return
 	}
-	// CUP/CUU 等跳转只改屏幕坐标、不清缓存;LF 下移的是**光标当前行**的内容位置,
-	// 缓存属于别的屏幕行时先落回当前行(有 review 视口时不查表:表是回看内容,
-	// 写入目标是实时内容,靠缓存跨视口)。
-	if !console.cursor_seg_ok || (tb.review_top == 0 && console.cursor_seg_row != console.cursor_row) {
-		cursorSegmentRefresh(console, tb)
-	}
 	console.vt.wrap_pending = false
 	hard := console.cursor_col == 0 // CR 之后的 LF = 硬换行
 	if int(console.cursor_row) < int(console.vt.scroll_bottom) {
@@ -626,16 +619,10 @@ vtLf :: proc(console_h : mem.Handle) {
 	} else {
 		vtScrollUp(console_h)
 	}
-	cursorSegmentNextLine(console, tb)
-	if hard && console.cursor_off != 0 {
-		// 落在现有逻辑行内部:在段首拆行(段边界 ⇒ 画面不动,只是把断点记下来)
-		if splitLineAt(tb, int(console.cursor_line), int(console.cursor_off)) > 0 {
-			console.cursor_line += 1
-			console.cursor_off = 0
-		}
+	if hard {
+		idx := termLineForWrite(console, tb, int(console.cursor_row))
+		tb.lines[idx].wrapped = false
 	}
-	cursorSegmentInvalidate(console)
-	tb.screen_dirty = true
 }
 
 // RI:光标上移一行;在滚动区顶则向下滚动(xterm 的 RevIndex 走 CursorUp,清 pending)
@@ -651,7 +638,6 @@ vtReverseIndex :: proc(console_h : mem.Handle) {
 	console.vt.wrap_pending = false
 	if int(console.cursor_row) > int(console.vt.scroll_top) {
 		console.cursor_row -= 1
-		cursorSegmentInvalidate(console)
 		return
 	}
 	vtScrollDown(console_h)
@@ -668,7 +654,7 @@ vtReset :: proc(console_h : mem.Handle) {
 	if vt.alt_term_buffer_id.id != 0 {
 		vtAltScreen(console_h, false)
 	}
-	TermBufferClear(console.active_term_buffer_id)
+	TermBufferClear(console.active_term_buffer_id, console.rows, console.cols)
 	vt.style = { fg = DEFAULT_COLOR, bg = DEFAULT_COLOR }
 	vt.scroll_top, vt.scroll_bottom = 0, console.rows - 1
 	vt.autowrap = true
@@ -685,7 +671,6 @@ vtReset :: proc(console_h : mem.Handle) {
 	vt.saved_cursor_row, vt.saved_cursor_col = 0, 0
 	vt.saved_scroll_top, vt.saved_scroll_bottom = 0, console.rows - 1
 	console.cursor_row, console.cursor_col = 0, 0
-	cursorSegmentInvalidate(console) // 内容已清空:缓存里的行号已不存在
 }
 
 vtPrint :: proc(console_h : mem.Handle, cp : rune) {
@@ -826,11 +811,10 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 		} else if private == 0 {
 			console.cursor_row, console.cursor_col = vt.saved_cursor_row, vt.saved_cursor_col
 		}
-	case 'S': // SU(光标不动、内容上移 ⇒ 光标下的内容变了,段缓存必须作废)
+	case 'S': // SU
 		for i in 0 ..< max(1, p0) {
 			vtScrollUp(console_h)
 		}
-		cursorSegmentInvalidate(console)
 	case 'T': // SD
 		for i in 0 ..< max(1, p0) {
 			vtScrollDown(console_h)
@@ -920,12 +904,12 @@ vtSetMode :: proc(console_h : mem.Handle, set : bool) {
 	switch mode {
 	case 3: // DECCOLM 80/132 列:切换清屏、光标回 home、滚动区重置
 		vt.deccolm = set
-		TermBufferClear(console.active_term_buffer_id)
+		new_cols : u16 = set ? 132 : 80
+		TermBufferClear(console.active_term_buffer_id, console.rows, new_cols)
 		console.cursor_row, console.cursor_col = 0, 0
 		vt.scroll_top, vt.scroll_bottom = 0, console.rows - 1
 		vt.wrap_pending = false
-		cursorSegmentInvalidate(console) // 内容已清空:缓存里的行号已不存在
-		console.cols = set ? 132 : 80
+		console.cols = new_cols
 		ct.Resize(console.conpty_handle, console.cols, console.rows)
 	case 6: // DECOM origin mode:置位光标移到滚动区 home,复位移到左上
 		vt.origin_mode = set
@@ -975,13 +959,13 @@ vtAltScreen :: proc(console_h : mem.Handle, enter : bool) {
 		vt.scroll_top, vt.scroll_bottom = 0, console.rows - 1
 		alt := vt.alt_term_buffer_id
 		if alt.id == 0 {
-			alt, _ = CreateTermBuffer()
+			alt, _ = CreateTermBuffer(console.rows, console.cols)
 			ConsoleAttachTermBuffer(console_h, alt)
 			vt.alt_term_buffer_id = alt
 		} else {
 			ConsoleActivateTermBuffer(console_h, alt)
 		}
-		TermBufferClear(alt)
+		TermBufferClear(alt, console.rows, console.cols)
 		console.cursor_row, console.cursor_col = 0, 0
 	} else {
 		alt := vt.alt_term_buffer_id
@@ -992,7 +976,9 @@ vtAltScreen :: proc(console_h : mem.Handle, enter : bool) {
 			DestroyTermBuffer(alt)
 			vt.alt_term_buffer_id = {}
 		}
-		console.cursor_row, console.cursor_col = vt.saved_cursor_row, vt.saved_cursor_col
+		// 主屏可能在交替屏期间被 resize 重排过:恢复的光标夹到当前几何
+		console.cursor_row = min(vt.saved_cursor_row, console.rows - 1)
+		console.cursor_col = min(vt.saved_cursor_col, console.cols - 1)
 		vt.scroll_top, vt.scroll_bottom = vt.saved_scroll_top, vt.saved_scroll_bottom
 	}
 }

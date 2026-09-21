@@ -26,13 +26,6 @@ Console :: struct {
 	origin_x, origin_y : f32, // 居中后网格左上角(内容区坐标空间);每帧由 ConsoleUpdateLayout 重算
 	cursor_row, cursor_col : u16, // **屏幕坐标**:行 0..rows-1、列 0..cols-1(VT 状态的地址空间)
 
-	// 光标段缓存(写入热路径,见 buffer.odin 的 cursorSegment):光标所在逻辑行 + 段首列。
-	// 折行时 O(1) 增量推进;跳转/结构变化只置 cursor_seg_ok = false,下次写入时惰性查表。
-	cursor_line : u32,
-	cursor_off : u32,
-	cursor_seg_ok : bool,
-	cursor_seg_row : u16, // 缓存属于哪个屏幕行:行一变(任何跳转)自动作废,不必在每个 VT 分支里撒失效
-
 	// 输入识别态(草稿纸)与终端语义态:两个平级组件,分别见 vtparse.odin / vt.odin
 	parser : Parser,
 	vt : VtState,
@@ -243,7 +236,7 @@ consoleInitSession :: proc(console_h : mem.Handle, rows, cols : u16, conpty_hand
 	}
 	ReleaseCommandPoll(console.poll_h) // 旧程序的授权不继承给新程序
 	console.poll_h = {}
-	tb_h, tb_ok := CreateTermBuffer()
+	tb_h, tb_ok := CreateTermBuffer(rows, cols)
 	if !tb_ok {
 		return false
 	}
@@ -252,7 +245,6 @@ consoleInitSession :: proc(console_h : mem.Handle, rows, cols : u16, conpty_hand
 	console.pty_rows = rows // 初始 = ConPTY 创建尺寸(80x24),与传入一致
 	console.pty_cols = cols
 	console.cursor_row, console.cursor_col = 0, 0
-	cursorSegmentInvalidate(console) // 新会话:光标段缓存从零开始(屏幕行表首次访问时建)
 	console.conpty_handle = conpty_handle
 	console.term_buffer_ids = {}
 	console.term_buffer_count = 0
@@ -323,7 +315,6 @@ ConsoleAttachTermBuffer :: proc(console_h, term_buffer_h : mem.Handle) -> bool {
 	for i in 0 ..< int(console.term_buffer_count) {
 		if console.term_buffer_ids[i] == term_buffer_h {
 			console.active_term_buffer_id = term_buffer_h
-			cursorSegmentInvalidate(console) // 切换写入目标:缓存里的行号属于旧页,作废
 			return true
 		}
 	}
@@ -333,7 +324,6 @@ ConsoleAttachTermBuffer :: proc(console_h, term_buffer_h : mem.Handle) -> bool {
 	console.term_buffer_ids[console.term_buffer_count] = term_buffer_h
 	console.term_buffer_count += 1
 	console.active_term_buffer_id = term_buffer_h
-	cursorSegmentInvalidate(console)
 	return true
 }
 
@@ -346,121 +336,117 @@ ConsoleActivateTermBuffer :: proc(console_h, term_buffer_h : mem.Handle) -> bool
 	for i in 0 ..< int(console.term_buffer_count) {
 		if console.term_buffer_ids[i] == term_buffer_h {
 			console.active_term_buffer_id = term_buffer_h
-			cursorSegmentInvalidate(console) // 切换写入目标:缓存里的行号属于旧页,作废
 			return true
 		}
 	}
 	return false
 }
 
-// 视口顶行(逻辑行号):= 窗口锚点所在行(buffer.odin 的 viewportAnchor,唯一推导)。
-// 渲染/光标应答/resize 共用,勿在别处重写。
-viewportTop :: proc(console : ^Console, tb : ^TermBuffer) -> int {
-	line, _ := viewportAnchor(console, tb)
-	return line
-}
-
-// 改网格尺寸的副作用:**光标按内容重定屏行** + cursor_col/滚动区下限 clamp + review 锚定补偿。
-// 锚定规则(同 alacritty):普通(贴底)保持贴底;review 保持视口内容(顶行)不动。
-// 光标是**屏幕坐标**(见 Console.cursor_row),尺寸一变就必须重定:先换算成尺寸无关的
-// 内容位置(逻辑行 + 行内绝对列),再按新网格落回屏幕行;内容落到新窗之上时,按真实
-// 终端语义丢掉新屏装不下的**底部**行,让光标成为窗顶(与老实现同一行为 —— 那时
-// cursor_row 是物理行,砍的是它下面的行)。
-applyConsoleSize :: proc(console : ^Console, rows, cols : u16) {
-	// 每帧都会被 ConsoleUpdateLayout 调到(尺寸通常没变)⇒ 同尺寸 = no-op。
-	// 这不只是省开销:下面的副作用里有"清 wrap_pending"和"重置滚动区",每帧做一次会
-	//   · 抹掉"写满最后一列、等下一字符折行"的状态 ⇒ 下一个字符**覆盖末列**
-	//     (实测 4 列写完 "abcd" 再写 "e" → "abce",不是折到下一行);
-	//   · 把应用用 DECSTBM 设的滚动区重置成全屏(实测 1..3 → 1..5),vim 那类 TUI 当场失效。
+// 改网格尺寸(唯一入口;每帧由布局趟调到,同尺寸 = no-op)。
+// 逐行模型下的重定规则(对照 alacritty 的 reflow):
+//   ① cols 变 ⇒ 内容重排(按 wrapped 串合并/重切);光标/选区/review 锚点先取出
+//      (物理行 + 列),reflow 用"流内偏移"把它们落到新网格;
+//   ② rows 变 ⇒ 只影响活窗口 base(= len - rows):屏幕始终物化 rows 行,
+//      内容不够就补空行;光标屏行 = 物理行 - 新 base。
+// 同尺寸必须直接返回:否则每帧都会清 wrap_pending、重置滚动区(实测代价见 B8/文档)。
+applyConsoleSize :: proc(console_h : mem.Handle, rows, cols : u16) {
+	console := GetConsole(console_h)
+	if console == nil || rows == 0 || cols == 0 {
+		return
+	}
 	if console.rows == rows && console.cols == cols {
 		return
 	}
 	tb := GetTermBuffer(console.active_term_buffer_id)
-	// 尺寸无关的两个量,必须在改尺寸**之前**取:
-	//   · 光标的内容位置。只存 (行, 段首) 不够 —— cols 一变段边界跟着变,老段首在新
-	//     网格里可能落在段中间;只有"行内绝对列"(off + cursor_col = 写入路径的 at)尺寸无关。
-	//   · 活窗口顶行(裁剪判定用)
-	cursor_line, cursor_pos := 0, 0
-	visible_top_before := 0
+	old_rows := int(console.rows)
+	cursor_abs, cursor_col := 0, 0
+	review_row := -1
+	n_anchors := 0
+	anchors : [4]ReflowAnchor
 	if tb != nil {
-		off := 0
-		cursor_line, off = cursorSegment(console, tb)
-		cursor_pos = off + int(console.cursor_col)
-		visible_top_before, _ = viewportAnchorLive(console, tb)
+		base := liveBase(tb, int(console.rows))
+		cursor_abs = base + int(console.cursor_row)
+		cursor_col = int(console.cursor_col)
+		if tb.review_top != 0 {
+			review_row = int(tb.review_top) - 1
+		}
+		anchors[0] = { cursor_abs, cursor_col }
+		anchors[1] = { review_row, 0 }
+		n_anchors = 2
+		if selection.buffer_h == console.active_term_buffer_id && GetConsole(selection.host) == console {
+			anchors[2] = { selection.pivot.line, selection.pivot.col }
+			anchors[3] = { selection.cur.line, selection.cur.col }
+			n_anchors = 4
+		}
 	}
-
+	if cols != console.cols {
+		// 所有登记页都重排:活动页带锚点;非活动页(如交替屏期间的 主屏)只按旧列宽并/切,
+		// 否则切回主屏时内容还停在旧折行(对照 alacritty 同时 reflow inactive grid)。
+		for i in 0 ..< int(console.term_buffer_count) {
+			buf_h := console.term_buffer_ids[i]
+			if buf_h == console.active_term_buffer_id && tb != nil {
+				TermBufferReflow(tb, int(cols), anchors[:n_anchors])
+			} else if buf := GetTermBuffer(buf_h); buf != nil {
+				TermBufferReflow(buf, int(cols), nil)
+			}
+		}
+		if tb != nil {
+			cursor_abs, cursor_col = anchors[0].row, anchors[0].col
+			review_row = anchors[1].row
+			if n_anchors == 4 {
+				selection.pivot = { line = anchors[2].row, col = anchors[2].col }
+				selection.cur = { line = anchors[3].row, col = anchors[3].col }
+			}
+		}
+	}
 	console.rows, console.cols = rows, cols
-	console.cursor_col = min(console.cursor_col, cols - 1)
-	console.vt.scroll_bottom = rows - 1
+	console.vt.scroll_top, console.vt.scroll_bottom = 0, rows - 1
 	console.vt.wrap_pending = false
-
-	if tb != nil {
-		// 光标的内容行落到**活窗口**之上 ⇒ 按真实终端语义丢掉新屏装不下的底部行,
-		// 让光标成为窗顶(与老实现同一行为)。
-		if cursor_line < visible_top_before {
-			keep := cursor_line + int(rows)
-			if keep < len(tb.lines) {
-				n := len(tb.lines) - keep
-				for i in keep ..< len(tb.lines) {
-					delete(tb.lines[i].cells)
-				}
-				remove_range(&tb.lines, keep, keep + n)
+	if tb == nil {
+		return
+	}
+	// 行数变化:
+	//   缩窗 = **顶部固定**(剪掉底部行,画面不整体上滚);光标若会被挤出新屏底,多剪 k 行
+	//   让它落在新屏底(等价于"滚到光标可见")。旧实现一律贴底(base = len - rows),内容
+	//   在顶部时会整屏上滚 —— 改字号(Ctrl+滚轮)每步都把提示符推进历史,shell 每次
+	//   SIGWINCH 重画就多出一行 `$`(截图里的竖排 $ 列)。
+	//   增窗 = 贴底:有历史就露出历史,没历史在底部补空行。
+	if int(rows) < old_rows {
+		R, Rp := old_rows, int(rows)
+		base_old := liveBase(tb, R)
+		crow := cursor_abs - base_old
+		k := max(0, crow - (Rp - 1)) // 需要把视口下移多少行来容下光标
+		for i in 0 ..< int(console.term_buffer_count) {
+			buf := GetTermBuffer(console.term_buffer_ids[i])
+			if buf == nil {
+				continue
 			}
-		}
-		// 新列宽下内容重排(一条逻辑行占几段变了)⇒ 光标必须按**内容**重定屏行:老的
-		// cursor_row 指的是老网格里的那一段,重排后它已经是别的内容。不重定,下一次写入
-		// (shell 收到 resize 会重画提示行)就落在列表中段,把内容写花。
-		tb.screen_dirty = true
-		r := screenRowForPos(console, tb, cursor_line, cursor_pos)
-		if r < 0 {
-			// 内容不在窗口里:在锚点之前 = 上方(夹到顶),否则在下方(夹到底)
-			anchor_line, anchor_off := viewportAnchor(console, tb)
-			above := cursor_line < anchor_line || (cursor_line == anchor_line && cursor_pos < anchor_off)
-			r = above ? 0 : int(rows) - 1
-		}
-		console.cursor_row = u16(clamp(r, 0, int(rows) - 1))
-		// 列也要换成**新段**里的列:段首变了,段内偏移跟着变。
-		// 地址落到段外(光标停在行内容末尾、新网格这一段装不下它)⇒ 停在该段末列并置
-		// wrap-pending —— 与写入路径同一编码("光标停在末列等折行"),下一个字符先折行再写;
-		// 不这么做,那一笔会**覆盖行尾最后一个字符**(实测:width 1 时 DCH 清错格)。
-		new_off, col := 0, 0
-		if cursor_line < len(tb.lines) {
-			cells := lineContent(tb.lines[cursor_line].cells[:])
-			new_off = segmentStartAt(cells, max(1, int(cols)), cursor_pos)
-			col = clamp(cursor_pos - new_off, 0, int(cols) - 1)
-			if cursor_pos - new_off >= int(cols) {
-				console.vt.wrap_pending = true
+			remove_n := R - Rp
+			if buf == tb {
+				remove_n -= k
 			}
+			for remove_n > 0 && len(buf.lines) > Rp {
+				delete(buf.lines[len(buf.lines) - 1].cells)
+				remove_range(&buf.lines, len(buf.lines) - 1, len(buf.lines))
+				remove_n -= 1
+			}
+			ensureTermRows(buf, Rp)
 		}
-		console.cursor_col = u16(col)
-		// 光标段缓存:表里就是那一段 ⇒ 直接把缓存写成它(维持"缓存 = 光标段")。
-		// 不能一律 invalidate —— 折行推进(cursorSegmentNextSegment)靠缓存里"同一逻辑行"的
-		// 知识,失效态下的惰性重查会按**新**屏行取段,把行号取成下一行(实测:缩到 1 列后
-		// 写 "d" 落到新行,而不是接着 "abc" 后面)。夹过边界时表里没有那一段,只能作废重查。
-		if r >= 0 {
-			console.cursor_line = u32(cursor_line)
-			console.cursor_off = u32(new_off)
-			console.cursor_seg_row = console.cursor_row
-			console.cursor_seg_ok = true
-		} else {
-			cursorSegmentInvalidate(console)
-		}
+		console.cursor_row = u16(clamp(cursor_abs - liveBase(tb, Rp), 0, Rp - 1))
 	} else {
-		cursorSegmentInvalidate(console)
-	}
-
-	// review 锚点是**顶行**编码(锁左上角那块内容),rows 变化不需要重定它;
-	// 但 cols 变了 ⇒ 段边界跟着变 ⇒ 把锚点吸附到"包含它的那一段"的起点,
-	// 免得窗口从一行的中途开始显示。
-	if tb != nil && tb.review_top != 0 {
-		li := int(tb.review_top) - 1
-		if li < len(tb.lines) {
-			cells := lineContent(tb.lines[li].cells[:])
-			tb.review_off = u32(segmentStartAt(cells, max(1, int(cols)), int(tb.review_off)))
-		} else {
-			tb.review_top, tb.review_off = 0, 0 // 内容被裁到锚点之上 ⇒ 回到最新
+		for i in 0 ..< int(console.term_buffer_count) {
+			ensureTermRows(GetTermBuffer(console.term_buffer_ids[i]), int(rows))
 		}
+		console.cursor_row = u16(clamp(cursor_abs - liveBase(tb, int(rows)), 0, int(rows) - 1))
 	}
+	console.cursor_col = u16(clamp(cursor_col, 0, int(cols) - 1))
+	base := liveBase(tb, int(rows))
+	if review_row >= 0 && review_row < base {
+		tb.review_top = u32(review_row + 1)
+	} else {
+		tb.review_top = 0 // 锚点落到活窗/内容不够 ⇒ 回最新
+	}
+	trimScrollback(console_h) // 变窄重排可能把行数放大,裁回上限
 }
 
 // Resize 时先改 ConPTY 再改这里;已有行不截断
@@ -469,7 +455,7 @@ ConsoleSetSize :: proc(console_h : mem.Handle, rows, cols : u16) -> bool {
 	if console == nil || rows == 0 || cols == 0 {
 		return false
 	}
-	applyConsoleSize(console, rows, cols)
+	applyConsoleSize(console_h, rows, cols)
 	return true
 }
 
@@ -483,8 +469,8 @@ ConsoleGridForRect :: proc(console : ^Console, t : Transform) -> (rows, cols : u
 		return 0, 0, false
 	}
 	m := fnt.GetMetrics(console.font_set.main_font)
-	if m.cell_width <= 0 || m.cell_height <= 0 {
-		return 0, 0, false
+	if m.cell_width <= 0 || m.cell_height <= 0 || t.width <= 0 || t.height <= 0 {
+		return 0, 0, false // 矩形没布局(0)时不能算出 1x1 会话,交由调用方回退 24x80
 	}
 	return u16(max(1, int(t.height / m.cell_height))), u16(max(1, int(t.width / m.cell_width))), true
 }
@@ -502,7 +488,7 @@ ConsoleUpdateLayout :: proc(console_h : mem.Handle, t : Transform, cell_w, cell_
 	if console.vt.deccolm {
 		cols = 132 // DECCOLM 132 列模式覆盖布局计算
 	}
-	applyConsoleSize(console, u16(rows), u16(cols))
+	applyConsoleSize(console_h, u16(rows), u16(cols))
 
 	if console.vt.deccolm {
 		console.origin_x = t.position_x // 132 列超出窗口:左对齐
@@ -537,14 +523,6 @@ ConsoleViewportTop :: proc(console_h : mem.Handle) -> (top : int, in_review : bo
 	if tb == nil {
 		return 0, false
 	}
-	return viewportTop(console, tb), tb.review_top != 0
-}
-
-// ---------------------------------------------------------------------------
-// 写路径
-// ---------------------------------------------------------------------------
-// 窗口顶行 = 锚点(唯一推导在 buffer.odin 的 viewportAnchor);这里只留一个语义化入口。
-screenTopLine :: proc(console : ^Console, tb : ^TermBuffer) -> int {
-	return viewportTop(console, tb)
+	return viewportBase(console, tb), tb.review_top != 0
 }
 

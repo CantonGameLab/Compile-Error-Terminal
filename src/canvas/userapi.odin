@@ -654,16 +654,14 @@ consumeConsoleOutput :: proc(node_h : mem.Handle) {
 // ---------------------------------------------------------------------------
 // 历史滚动(review)
 // ---------------------------------------------------------------------------
-// 历史滚动,delta 单位 = 行:
+// 历史滚动,delta 单位 = 行(逐行模型下就是行,不再有"段"):
 //   delta > 0 → 向下翻(看更新的内容);delta < 0 → 向上翻(看旧内容,进入 review)
 //   边界:向上翻到历史顶 clamp;向下滚到底(回到最新行)自动退出 review,
 //   回到普通模式(实时跟随)。
-// 数据模型(单真值):TermBuffer.review_line
-//   0              = 普通模式(实时跟随,底行 = 最新行)
-//   n (1..)        = review 模式,值 = 窗口底行物理索引 + 1;绝对锚定:
+// 数据模型(单真值):TermBuffer.review_top
+//   0              = 普通模式(实时跟随,视口顶 = len - rows)
+//   n (1..)        = review 模式,值 = 视口顶行物理索引 + 1;绝对锚定:
 //                    新输出到达时不动(视口内容稳定),trim 裁剪时平移补偿
-//   滚回最新       = review_line 置 0(与"底行索引+1 == len"等价,避免
-//                    "底行 = 0"与普通模式哨兵冲突)
 // 输入即退出 review 由 FeedConsole 统一承担(用户输入语义内聚)。
 ConsoleScroll :: proc(delta : int, id : mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
@@ -678,18 +676,14 @@ ConsoleScroll :: proc(delta : int, id : mem.Handle = {}) -> bool {
 	if tb == nil {
 		return false
 	}
-	// 锚点是**顶行**编码 (行, 段):delta 按**屏幕段**走(一行占几段随 cols 变,
-	// 所以历史回看必须按屏幕行走,不能按行跳)
-	line, off := viewportAnchor(console, tb)
-	nline, noff := ViewportAnchorShift(tb, max(1, int(console.cols)), line, off, delta)
-	live_line, live_off := viewportAnchorLive(console, tb)
-	if nline > live_line || (nline == live_line && noff >= live_off) {
-		tb.review_top, tb.review_off = 0, 0 // 到最新 = 普通模式
+	live := liveBase(tb, int(console.rows))
+	base := viewportBase(console, tb)
+	next := clamp(base + delta, 0, live)
+	if next >= live {
+		tb.review_top = 0 // 到最新 = 普通模式
 	} else {
-		tb.review_top = u32(nline + 1)
-		tb.review_off = u32(noff)
+		tb.review_top = u32(next + 1)
 	}
-	tb.screen_dirty = true // 锚点变了 ⇒ 屏幕行表必须重建(表由写路径就地置失效)
 	return true
 }
 
@@ -715,9 +709,8 @@ exitReview :: proc(console : ^Console) -> bool {
 	if tb == nil {
 		return false
 	}
-	tb.review_top, tb.review_off = 0, 0
-	tb.screen_dirty = true // 锚点变了 ⇒ 屏幕行表重建
-	SelectionClear()       // 按键输入即取消选区(常规终端行为)
+	tb.review_top = 0
+	SelectionClear() // 按键输入即取消选区(常规终端行为)
 	return true
 }
 

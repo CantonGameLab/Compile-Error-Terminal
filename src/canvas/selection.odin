@@ -1,5 +1,6 @@
-// 文本选区数据(Selection):buffer 内容坐标 + 区间判定/提取/剪贴板动作。
-// 坐标系 = TermBuffer 逻辑 (行, 列):内容在,选区在 —— 窗口/页/焦点/resize/重排免疫。
+// 文本选区数据(Selection):buffer 物理行坐标 + 区间判定/提取/剪贴板动作。
+// 坐标系 = TermBuffer (物理行, 列):内容在,选区在 —— 窗口/页/焦点免疫;
+// resize 重排会改变物理行号,由 applyConsoleSize 把锚点一起重排(流内偏移)。
 // 生命周期只有两条规则(见下面"生命周期"段):**按键输入即取消**(唯一写点 exitReview)、
 // **review 时保持**;失效惰性判(SelectionValid),不设每帧自愈趟,也没有写路径平移通报。
 // host = 持有 buffer 的 console(换算/提取几何);渲染经 active buffer 比较,不经 host 查找。
@@ -124,17 +125,19 @@ hostConsoleFor :: proc(buffer_h : mem.Handle) -> mem.Handle {
 // 鼠标建立(路由调用):命中窗口 → 屏幕行列 → buffer 坐标
 // ---------------------------------------------------------------------------
 // 屏幕 → buffer 网格(clamp 到网格边界)。规范化在 selectionNormalize(方向定后)。
-// 列是**逻辑列**(段首 + 段内列):逻辑行可以比屏幕宽,选区坐标跟内容走,不跟屏幕走。
+// 逐行模型下就是 视口顶行 + 屏幕行;行号一定有效(屏幕物化 + review 锚点夹取)。
+// 用**显示视口**口径:review 时选中的就是看得见的历史行。
 screenToBuffer :: proc(console : ^Console, tb : ^TermBuffer, m : fnt.Metrics, x, y : f32) -> (line, col : int) {
 	row := clamp(int((y - console.origin_y) / m.cell_height), 0, int(console.rows) - 1)
 	col = clamp(int((x - console.origin_x) / m.cell_width), 0, int(console.cols) - 1)
-	line_idx, off, _ := screenSegmentAt(console, tb, row)
-	// 内容之外的屏幕行会得到 len(lines)(表在末尾饱和)⇒ 夹到有效行:
-	// 后面所有消费者(normalize/词选/行选/高亮)都按"这个行号一定有效"来写。
-	if line_idx >= len(tb.lines) {
-		line_idx = len(tb.lines) - 1
+	line = viewportBase(console, tb) + row
+	if line >= len(tb.lines) {
+		line = len(tb.lines) - 1
 	}
-	return line_idx, off + col
+	if line < 0 {
+		line = 0
+	}
+	return line, col
 }
 
 // 宽字符边界规范化(方向感知):起点在续列 → 左移入字首;终点在续列 → 右移包含整字。
@@ -288,12 +291,11 @@ ExtractSelectionText :: proc() -> []u8 {
 			break
 		}
 		line := &tb.lines[line_idx]
-		if line_idx > lo.line {
-			// 逻辑行存储后:一条 buffer 行就是一条真实文本行,行间一律换行 ——
-			// 软折行不再产生新行(它只是同一行占多个屏幕段),所以这里不需要任何标记判断。
+		if line_idx > lo.line && !line.wrapped {
+			// 软续行(wrapped)不断行:它和上一行是同一条逻辑文本;硬换行才写 \r\n
 			strings.write_string(&b, "\r\n")
 		}
-		// 逻辑行可以比屏幕宽:每行的"行尾"是它的内容长度,不是 cols
+		// 物理行的"行尾" = 屏宽(不足按空白;长行不存在了)
 		line_end := LineWidth(line.cells[:], cols)
 		s := 0
 		e := line_end

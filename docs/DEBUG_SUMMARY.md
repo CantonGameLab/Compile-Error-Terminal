@@ -132,6 +132,9 @@
 
 ### B8. 底部软折行/回车产生多余空行(折行逻辑与光标段缓存)
 
+> 注:B9 起内容层改为**逐行网格**(纯物理行),本条修补的"逻辑行 + 段派生"前提已废弃;
+> 留下作为历史记录与"为什么改模型"的对照。
+
 **现象**(用户报告"莫名其妙出现很多多余的空行"):屏幕底行的内容一折行,正文就整体上浮、下面多出等量空行;回车后提示符落在一串空行之上;某些序列(EL 补齐后回车、进交替屏、SU、RIS/DECCOLM)之后内容整块错位。用 `playground/wrapcheck/` 逐条复现(5×10 面板):
 
 | 场景 | 旧行为 | 新行为 |
@@ -153,6 +156,23 @@
 5. **`wrap_pending` 与 xterm 不符**:见 B2 后修正。LF/IND/RI 清 pending;EL/ED(0/1/2)/ECH/DCH/ICH/IL/DL 清 pending;SGR/模式/应答不清(nvim eob 依赖后者)。
 
 **验证**:`playground/wrapcheck/`(本地探针,18 组场景回归;`playground/` 已在 .gitignore)。
+
+### B9. vim visual 模式按 `l` 后内容错乱/自动加行(折行模型重构为逐行)
+
+**现象**(用户截图):vim 打开 `resource/config.ceterm`,`G` 到底部、`v` 进 visual 再按几次 `l`,屏幕出现阶梯状散落字符、`-- VISUAL --` 双影、行数莫名增加,终端与 vim 的屏幕模型彻底错位。
+
+**复现**(`playground/vimrepro/`):ConPTY 里跑真实 vim,喂给 canvas 的真实语义层(含 CPR/DA 应答),按键脚本 `G → gg → v → l×6 → resize 90 → resize 120`,每步 dump `lines`/屏幕行↔行号映射。用旧模型复现:启动时 `default-launch "...FiraCode Nerd Font"` 这类长行写满后靠**自动折行**落到下一物理行;vim 认为那是独立屏幕行,随后用 `CUP` 定位到该行重绘 —— 旧模型把它换算回**同一逻辑行的续段**或**下一条逻辑行**,写入落错,增量重绘级联把整屏写花(截图里的阶梯字符)。
+
+**根因**:**逻辑行 + 屏幕段派生**与 VT 绝对寻址不兼容。自动折行是 VT 明文行为(下一物理行),应用(CUP 绝对定位)与终端对"第 r 行是什么"的理解必须一致;段派生让屏幕行 → 内容行的映射依赖内容长度,任何"折行 + 绝对定位"混用都会错行。
+
+**修复**:内容层重构为**逐行网格**(对照 alacritty `grid/row.rs` 的 `WRAPLINE`、Windows Terminal `textBuffer.cpp` 的 `WasWrapForced`):
+- `Line = {cells, wrapped}`;屏幕第 r 行 ↔ `lines[base + r]`(线性下标,无表/无段/无光标段缓存);屏幕始终物化 `rows` 行。
+- 软折行 = 新开物理行 + `wrapped = true`(`vtWrapOnce`);硬换行(LF/IND/NEL 列 0)清落点行标记;显式行首覆盖写与整行擦除也清;reflow 只在 `wrapped` 串内合并。
+- `cols` 变化 ⇒ reflow(按 `wrapped` 串合并/重切;内容长度用 `LineExtent`;宽字对不跨行);光标/选区/review 锚点按"流内偏移"随动;**所有登记页都重排**(含交替屏期间的主屏)。
+- `rows` 变化 ⇒ 只重算 base 与光标屏行;同尺寸 no-op 保留。
+- 擦除/插删全部退化为物理行的 `[0, cols)` 算术;IL/DL/SU/SD 不再需要 `splitRowsInRegion`。
+
+**验证**:`playground/vimrepro/` 复现转绿(行数恒 30、无 `wrapped` 残留、`l` 逐列移动、resize 后并回);`playground/wrapcheck/`(底部折行/EL 回车/CUP 覆盖续行/硬行 reflow/CJK 不劈开/选区跨软折行/resize 选区随动/交替屏/裸 LF+EL 清 pending)。
 
 ---
 
@@ -187,7 +207,7 @@
 ### 写入/折行
 2. **wrap-pending**:写满最后一列,光标停最后一列置 pending;**下一个可打印字符**才折行
 3. **谁清 pending(xterm `ResetWrap` 口径)**:光标移动类(CUP/CUU/CUD/CUF/CUB/CHA/VPA/HPA/VPR/HPR/DECRC/BS/TAB/CR)、LF/IND/RI、EL/ED 0-2/ECH/DCH/ICH/IL/DL 都清;**SGR/模式/应答不清**(nvim eob 依赖"写满 + 改色 + 字符折行")
-4. **全屏软折行不 append 空行**:底行折行靠逻辑行多长一段把顶段挤出活窗口(视口贴底推导);只有 LF/SU 这类"下移到新行"才 append 空行(见 B8)
+4. **折行 = 新物理行(逐行网格,B9)**:软折行落到下一行并置 `wrapped`(底行先滚屏,顶行进历史);硬换行(LF/NEL/IND 列 0)也开新行但清 `wrapped`。屏幕第 r 行 ↔ `lines[base + r]`,绝对定位与自动折行不会错行
 5. **宽字符占 2 列**:EAW=W/F 字符(`runeWidth`),续列 cell 继承样式;最后列放不下先折行;BS/CUB/CUF 跳过续列
 6. **空白格 = 默认样式**:任何方式创建的空 cell 必须 `fg/bg = DEFAULT_COLOR`,零值 `bg=0` 会被渲染成黑色块
 
