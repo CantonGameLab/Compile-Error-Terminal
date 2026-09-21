@@ -588,7 +588,7 @@ vtHandleC0 :: proc(console_h : mem.Handle, b : u8) {
 		console.vt.wrap_pending = false
 		col := (int(console.cursor_col) / 8 + 1) * 8
 		console.cursor_col = min(u16(col), console.cols - 1)
-	case 0x0A, 0x0B, 0x0C: // LF/VT/FF(不清 pending:写满后 LF 下移,下一字符仍折行)
+	case 0x0A, 0x0B, 0x0C: // LF/VT/FF(清 pending:见 vtLf —— xterm 的 index 走 CursorDown)
 		vtLf(console_h)
 	case 0x0D: // CR
 		console.vt.wrap_pending = false
@@ -601,6 +601,8 @@ vtHandleC0 :: proc(console_h : mem.Handle, b : u8) {
 //     若该段落在现有逻辑行内部(行还有内容)⇒ 在段首拆行,把"硬换行"记进结构里。
 //   · 光标在列 > 0(裸 LF)⇒ 只下移,内容不动(xterm 的 index 语义)。
 // 内容本身永不因为 LF 被切分。
+// wrap-pending 必须清掉:xterm 的 index 走 CursorDown,而 CursorDown 会 ResetWrap。
+// 不清的后果:写满最后一列后收到 LF,光标已下移一行,下一字符又折一次 —— 白多一空行。
 vtLf :: proc(console_h : mem.Handle) {
 	console := GetConsole(console_h)
 	if console == nil {
@@ -611,6 +613,13 @@ vtLf :: proc(console_h : mem.Handle) {
 	if tb == nil {
 		return
 	}
+	// CUP/CUU 等跳转只改屏幕坐标、不清缓存;LF 下移的是**光标当前行**的内容位置,
+	// 缓存属于别的屏幕行时先落回当前行(有 review 视口时不查表:表是回看内容,
+	// 写入目标是实时内容,靠缓存跨视口)。
+	if !console.cursor_seg_ok || (tb.review_top == 0 && console.cursor_seg_row != console.cursor_row) {
+		cursorSegmentRefresh(console, tb)
+	}
+	console.vt.wrap_pending = false
 	hard := console.cursor_col == 0 // CR 之后的 LF = 硬换行
 	if int(console.cursor_row) < int(console.vt.scroll_bottom) {
 		console.cursor_row += 1
@@ -629,7 +638,7 @@ vtLf :: proc(console_h : mem.Handle) {
 	tb.screen_dirty = true
 }
 
-// RI:光标上移一行;在滚动区顶则向下滚动
+// RI:光标上移一行;在滚动区顶则向下滚动(xterm 的 RevIndex 走 CursorUp,清 pending)
 vtReverseIndex :: proc(console_h : mem.Handle) {
 	console := GetConsole(console_h)
 	if console == nil {
@@ -639,6 +648,7 @@ vtReverseIndex :: proc(console_h : mem.Handle) {
 	if tb == nil {
 		return
 	}
+	console.vt.wrap_pending = false
 	if int(console.cursor_row) > int(console.vt.scroll_top) {
 		console.cursor_row -= 1
 		cursorSegmentInvalidate(console)
@@ -675,6 +685,7 @@ vtReset :: proc(console_h : mem.Handle) {
 	vt.saved_cursor_row, vt.saved_cursor_col = 0, 0
 	vt.saved_scroll_top, vt.saved_scroll_bottom = 0, console.rows - 1
 	console.cursor_row, console.cursor_col = 0, 0
+	cursorSegmentInvalidate(console) // 内容已清空:缓存里的行号已不存在
 }
 
 vtPrint :: proc(console_h : mem.Handle, cp : rune) {
@@ -706,7 +717,8 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 	tb := GetTermBuffer(console.active_term_buffer_id)
 	// 注意:wrap_pending 不能被 SGR 等 CSI 清除(xterm 语义,写满列后
 	// 改颜色再写字符仍要折行;nvim 的 eob/状态栏绘制依赖此行为)。
-	// 只有光标定位类操作才清除(见各 case)。
+	// 清 pending 的是光标定位类与本层各写操作(EL/ED/ECH/DCH/ICH/IL/DL,
+	// 见各 case 或被调函数),即 xterm 里会 ResetWrap 的那些;SGR/模式/应答不清。
 	// vtparse 的 Clear 只重置 num_params 不清数组:无参数序列必须显式取 0,
 	// 否则读到上一条序列的残留参数(如 ESC[2J 后跟 ESC[H 会带 p0=2)
 	p0 := 0
@@ -814,10 +826,11 @@ vtCsiDispatch :: proc(console_h : mem.Handle, final : u8) {
 		} else if private == 0 {
 			console.cursor_row, console.cursor_col = vt.saved_cursor_row, vt.saved_cursor_col
 		}
-	case 'S': // SU
+	case 'S': // SU(光标不动、内容上移 ⇒ 光标下的内容变了,段缓存必须作废)
 		for i in 0 ..< max(1, p0) {
 			vtScrollUp(console_h)
 		}
+		cursorSegmentInvalidate(console)
 	case 'T': // SD
 		for i in 0 ..< max(1, p0) {
 			vtScrollDown(console_h)
@@ -911,6 +924,7 @@ vtSetMode :: proc(console_h : mem.Handle, set : bool) {
 		console.cursor_row, console.cursor_col = 0, 0
 		vt.scroll_top, vt.scroll_bottom = 0, console.rows - 1
 		vt.wrap_pending = false
+		cursorSegmentInvalidate(console) // 内容已清空:缓存里的行号已不存在
 		console.cols = set ? 132 : 80
 		ct.Resize(console.conpty_handle, console.cols, console.rows)
 	case 6: // DECOM origin mode:置位光标移到滚动区 home,复位移到左上

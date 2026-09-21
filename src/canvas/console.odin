@@ -323,6 +323,7 @@ ConsoleAttachTermBuffer :: proc(console_h, term_buffer_h : mem.Handle) -> bool {
 	for i in 0 ..< int(console.term_buffer_count) {
 		if console.term_buffer_ids[i] == term_buffer_h {
 			console.active_term_buffer_id = term_buffer_h
+			cursorSegmentInvalidate(console) // 切换写入目标:缓存里的行号属于旧页,作废
 			return true
 		}
 	}
@@ -332,6 +333,7 @@ ConsoleAttachTermBuffer :: proc(console_h, term_buffer_h : mem.Handle) -> bool {
 	console.term_buffer_ids[console.term_buffer_count] = term_buffer_h
 	console.term_buffer_count += 1
 	console.active_term_buffer_id = term_buffer_h
+	cursorSegmentInvalidate(console)
 	return true
 }
 
@@ -344,6 +346,7 @@ ConsoleActivateTermBuffer :: proc(console_h, term_buffer_h : mem.Handle) -> bool
 	for i in 0 ..< int(console.term_buffer_count) {
 		if console.term_buffer_ids[i] == term_buffer_h {
 			console.active_term_buffer_id = term_buffer_h
+			cursorSegmentInvalidate(console) // 切换写入目标:缓存里的行号属于旧页,作废
 			return true
 		}
 	}

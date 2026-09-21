@@ -456,9 +456,11 @@ LineSegments :: proc(cells : []Cell, cols : int) -> int {
 // 光标段(写入热路径)
 // ---------------------------------------------------------------------------
 // 光标是屏幕坐标,而内容寻址要 (逻辑行, 段首列)。这两个数缓存在 Console 上:
-//   · 折行/LF/滚动 ⇒ cursorSegmentAdvance 做 **O(1) 增量推进**(同行下一段 / 下一行第 0 段);
-//   · 光标跳转(CUP/CUU/CUD/VPA/DECRC)、resize、结构操作(插删行/裁剪/清空/拆行)⇒
-//     只需 invalidate(置 cursor_seg_ok = false),下一次写入时惰性查一次屏幕行表。
+//   · 折行/LF/滚动 ⇒ cursorSegmentNextSegment/NextLine 做 **O(1) 增量推进**;
+//   · 光标跳转(CUP/CUU/CUD/VPA/DECRC)**不清缓存**:写入路径按 cursor_seg_row 失配重查,
+//     LF 前也按当前行同步一次(vtLf);
+//   · 结构变了(切页/清空/SU 全屏上滚/插删行/裁剪/拆行/resize)必须 **显式 invalidate** ——
+//     那些操作不改 cursor_row,屏幕行检查兜不住。
 // 绝不能在字符循环里查表:那等于每落一格重建 rows 项。
 cursorSegmentInvalidate :: proc(console : ^Console) {
 	console.cursor_seg_ok = false
@@ -475,6 +477,18 @@ cursorSegmentRefresh :: proc(console : ^Console, tb : ^TermBuffer) {
 	screenEnsure(console, tb)
 	r := int(console.cursor_row)
 	if r >= 0 && r < len(tb.screen) {
+		if int(tb.screen[r].line) >= len(tb.lines) {
+			// 光标落在内容下方的空白区(内容还没铺满屏):屏幕行 r 对应"末尾之后的第
+			// (r - 空白区首行) 条新行"。饱和成 len(lines) 会让写入挤在内容末尾 ——
+			// 实测内容两行时 CUP 到第 5 行写 X,X 出现在第 3 行、光标框留在第 5 行。
+			first := r
+			for first > 0 && int(tb.screen[first - 1].line) >= len(tb.lines) {
+				first -= 1
+			}
+			console.cursor_line = u32(len(tb.lines) + (r - first))
+			console.cursor_off = 0
+			return
+		}
 		console.cursor_line = tb.screen[r].line
 		console.cursor_off = tb.screen[r].offset
 		return
@@ -496,6 +510,8 @@ cursorSegment :: proc(console : ^Console, tb : ^TermBuffer) -> (line, off : int)
 // 光标内容位置下移**一段**(软折行专用):**留在同一条逻辑行**里,off += 本段长度。
 // 关键:段尾正好等于行尾时也不能换行 —— 应用还在续写同一行(这正是"逻辑行"的含义),
 // 换行只由 LF/NEL 决定。行不够长就补格(写入路径随后会覆盖)。
+// n == 0(off 已在内容末尾;区域滚动后光标落在新插入的空行上就是这种)⇒ off 不动,
+// 否则会凭空前进一格,那一笔画出来就带一个前导空白。
 cursorSegmentNextSegment :: proc(console : ^Console, tb : ^TermBuffer) {
 	if !console.cursor_seg_ok {
 		cursorSegmentRefresh(console, tb)
@@ -504,8 +520,10 @@ cursorSegmentNextSegment :: proc(console : ^Console, tb : ^TermBuffer) {
 	line := int(console.cursor_line)
 	off := int(console.cursor_off)
 	if line < len(tb.lines) {
-		n := max(1, SegmentLen(lineContent(tb.lines[line].cells[:]), off, cols))
-		console.cursor_off = u32(off + n)
+		n := SegmentLen(lineContent(tb.lines[line].cells[:]), off, cols)
+		if n > 0 {
+			console.cursor_off = u32(off + n)
+		}
 	} else {
 		console.cursor_off = u32(off + cols)
 	}
@@ -514,6 +532,9 @@ cursorSegmentNextSegment :: proc(console : ^Console, tb : ^TermBuffer) {
 
 // 光标内容位置下移**一行**(LF/NEL 专用 = 硬换行):这一段就是本行最后一段 ⇒ 换下一行,
 // 否则留在本行(裸 LF 只下移;CR+LF 的"硬断点"由调用方在段边界拆行记下)。
+// "本行走完"以**内容长度**为准:EL/ED 把行补齐到 cols 的空白不是内容,若按 cells 长度
+// 判定,回车会被当成"行内硬断点"、在内容末尾拆出一条全是补齐空白的行 —— 每敲一次回车
+// 多一个空行(实测:底部行写 "eeeab" + ESC[K 再回车,PROMPT 与内容之间多出一行)。
 cursorSegmentNextLine :: proc(console : ^Console, tb : ^TermBuffer) {
 	if !console.cursor_seg_ok {
 		cursorSegmentRefresh(console, tb)
@@ -522,8 +543,10 @@ cursorSegmentNextLine :: proc(console : ^Console, tb : ^TermBuffer) {
 	line := int(console.cursor_line)
 	off := int(console.cursor_off)
 	if line < len(tb.lines) {
-		n := SegmentLen(lineContent(tb.lines[line].cells[:]), off, cols)
-		if off + n < len(tb.lines[line].cells) {
+		cells := tb.lines[line].cells[:]
+		extent := LineExtent(cells)
+		n := SegmentLen(cells[:extent], off, cols)
+		if off + n < extent {
 			console.cursor_off = u32(off + n) // 行内还有内容:只下移一段
 			console.cursor_seg_row = console.cursor_row
 			return
@@ -568,8 +591,14 @@ vtWrapOnce :: proc(console_h : mem.Handle) {
 	}
 	if int(console.cursor_row) < int(console.vt.scroll_bottom) {
 		console.cursor_row += 1
+	} else if console.vt.scroll_top == 0 && console.vt.scroll_bottom == console.rows - 1 {
+		// 全屏软折行:**不追加空行**。追加的空行排在逻辑行之后,而活窗口贴底
+		// (viewportAnchorLive 从内容尾部推),它会被摆到底行 —— 每折一次多一个空行,
+		// 折出来的正文反被挤出屏幕(实测:5x10 底部行打 25 字符 → 2 个空行、正文上浮)。
+		// 这里什么都不做:紧接的写入让逻辑行多长一段,活窗口自然把顶段挤出,
+		// 底段就是光标所在段 —— 与"cursor_row 不变"自洽。
 	} else {
-		vtScrollUp(console_h) // 全屏上滚:窗口跟着内容走,光标的屏幕行不变
+		vtScrollUp(console_h) // 区域滚动:区内按行搬移,光标段缓存由 vtScrollUp 作废
 	}
 	cursorSegmentNextSegment(console, tb)
 	console.cursor_col = 0
@@ -835,6 +864,8 @@ sanitizeWidePairs :: proc(line : ^Line, from, to : int) {
 
 // mode:0 到行尾 / 1 到行首 / 2 整行
 // 行 = **屏幕段**:段首 off + 段内列;擦除范围不越过本段(段外的内容属同一逻辑行的其他屏行)。
+// 清 wrap-pending:xterm 的 EL(ClearRight/ClearInLine)会 ResetWrap —— 不清的话,
+// 应用"写满末列 + 擦行 + 写字"会被折到下一行,而 xterm 是在原列覆盖。
 vtEraseInLine :: proc(console_h : mem.Handle, mode : int) {
 	console := GetConsole(console_h)
 	if console == nil {
@@ -844,6 +875,7 @@ vtEraseInLine :: proc(console_h : mem.Handle, mode : int) {
 	if tb == nil {
 		return
 	}
+	console.vt.wrap_pending = false
 	line_idx, off := cursorSegment(console, tb)
 	for len(tb.lines) <= line_idx {
 		append(&tb.lines, Line{})
@@ -883,6 +915,9 @@ vtEraseInDisplay :: proc(console_h : mem.Handle, mode : int) {
 	tb := GetTermBuffer(console.active_term_buffer_id)
 	if tb == nil {
 		return
+	}
+	if mode != 3 {
+		console.vt.wrap_pending = false // ED 0/1/2 同 xterm(ClearScreen/ClearBelow/ClearAbove)
 	}
 	base := viewportTop(console, tb)
 	switch mode {
@@ -958,6 +993,7 @@ vtEraseChars :: proc(console_h : mem.Handle, n : int) {
 	if tb == nil {
 		return
 	}
+	console.vt.wrap_pending = false // ECH 同 xterm(ClearRight)
 	line_idx, off := cursorSegment(console, tb)
 	if line_idx >= len(tb.lines) {
 		return
@@ -995,6 +1031,7 @@ vtDeleteChars :: proc(console_h : mem.Handle, n : int) {
 	if tb == nil {
 		return
 	}
+	console.vt.wrap_pending = false // DCH 同 xterm(DeleteChar)
 	line_idx, off := cursorSegment(console, tb)
 	if line_idx >= len(tb.lines) {
 		return
@@ -1028,6 +1065,7 @@ vtInsertChars :: proc(console_h : mem.Handle, n : int) {
 	if tb == nil {
 		return
 	}
+	console.vt.wrap_pending = false // ICH 同 xterm(InsertChar)
 	line_idx, off := cursorSegment(console, tb)
 	for len(tb.lines) <= line_idx {
 		append(&tb.lines, Line{})
@@ -1061,6 +1099,7 @@ vtInsertLines :: proc(console_h : mem.Handle, n : int) {
 	if tb == nil {
 		return
 	}
+	console.vt.wrap_pending = false // IL 同 xterm(InsertLine)
 	// IL/DL 是**屏幕行**级操作:先让滚动区内的每个屏幕行都恰好是一条逻辑行
 	// (长行按段边界拆开 —— 内容与画面都不动,只是拆成多条行),之后行级搬移才正确。
 	splitRowsInRegion(console_h, console, tb)
@@ -1112,6 +1151,7 @@ vtDeleteLines :: proc(console_h : mem.Handle, n : int) {
 	if tb == nil {
 		return
 	}
+	console.vt.wrap_pending = false // DL 同 xterm(DeleteLine)
 	splitRowsInRegion(console_h, console, tb) // 同 IL:先按段边界拆开,行级搬移才正确
 	row, _ := cursorSegment(console, tb)
 	bottom := viewportTop(console, tb) + int(console.vt.scroll_bottom)
