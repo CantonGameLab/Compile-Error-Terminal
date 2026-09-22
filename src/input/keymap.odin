@@ -19,6 +19,12 @@ translateKey :: proc(k : s3.KeyboardEvent) -> (seq : [MAX_KEY_SEQ]u8, n : int) {
 		seq[0] = 0x7F // DEL(cmd 退格)
 		return seq, 1
 	case .TAB:
+		// Shift+Tab = CBT(ESC [ Z):终端世界的既定编码。不特判的话它和裸 Tab 一个字节,
+		// 读行程序(nvim/readline)的 <S-Tab> 就永远收不到。
+		if k.mod & s3.KMOD_SHIFT != {} {
+			seq[0], seq[1], seq[2] = 0x1B, '[', 'Z'
+			return seq, 3
+		}
 		seq[0] = '\t'
 		return seq, 1
 	case .ESCAPE:
