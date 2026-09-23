@@ -12,7 +12,7 @@ ArgKind :: enum u8 {
 	I32,        // 非负整数 → ival
 	Toggle,     // on/off;省略 → mode = .Toggle(三态)
 	SplitDir,   // right|left|up|down|h|v → dir + split_first
-	FocusArg,   // id 或方向词 → kind 分派 FocusId/FocusDir
+	FocusArg,   // id 或方向词 → fdir/target;仅 focus(spec.kind == .FocusId)改判 kind
 	KeyCombo,   // mods+key → sc + mods
 	ThemeField, // 主题字段名 → tfield + tindex(解析期校验)
 	Color,      // #RRGGBB / RRGGBB / 0xRRGGBB → color
@@ -24,7 +24,7 @@ MAX_CMD_ARGS :: 4 // 单命令参数上限(表里 args 的长度上限)
 CommandSpec :: struct {
 	name   : string,                // 规范名(格式化/help 用)
 	alias  : string,                // 别名("" = 无)
-	kind   : CommandStringKind,     // 默认 kind(FocusArg 可改判)
+	kind   : CommandStringKind,     // 默认 kind(仅 focus 对 FocusArg 改判 kind)
 	args   : []ArgKind,             // 位置参数形态(长度 ≤ MAX_CMD_ARGS,None 结尾)
 	req    : u8,                    // 前 req 个必填(其余可省)
 	target : bool,                  // 允许末尾 @id(窗口类命令)

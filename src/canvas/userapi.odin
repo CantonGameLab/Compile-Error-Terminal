@@ -33,16 +33,16 @@ import "core:strings"
 // 正常用法是 cmd+font+size 一起设置,或全部留空 = 窗格不启动。
 // 内部读写 = GetDefaultLaunch() 指针直接操作字段(字符串所有权归设置方)。
 DefaultLaunch :: struct {
-	cmd : string,
-	font : string,
-	cn_font : string, // 中文字体("" = 用系统候选);与 font 一起构成默认字体集
-	size : f32,
+	cmd:     string,
+	font:    string,
+	cn_font: string, // 中文字体("" = 用系统候选);与 font 一起构成默认字体集
+	size:    f32,
 }
 
-default_launch : DefaultLaunch
+default_launch: DefaultLaunch
 
 // userapi:设置默认启动配置(cmd/font/cn_font 传空串 = 对应项不自动应用)
-SetDefaultLaunch :: proc(cmd, font, cn_font : string, size : f32) {
+SetDefaultLaunch :: proc(cmd, font, cn_font: string, size: f32) {
 	if default_launch.cmd != "" {
 		delete(default_launch.cmd)
 	}
@@ -65,7 +65,7 @@ GetDefaultLaunch :: proc() -> ^DefaultLaunch {
 
 // 新建窗格的自动应用:先字体后启动(先设字体,应用才能挂上)。
 // 只应用于创建瞬间,不影响窗格后续手动操作;字体/会话都触发 console 懒创建。
-applyDefaultLaunch :: proc(node_h : mem.Handle) {
+applyDefaultLaunch :: proc(node_h: mem.Handle) {
 	if node_h.id == 0 {
 		return
 	}
@@ -75,7 +75,10 @@ applyDefaultLaunch :: proc(node_h : mem.Handle) {
 	}
 	if d.cmd != "" {
 		if !LaunchConsole(d.cmd, node_h) {
-			fmt.eprintln("Your default launch didn't. Alacritty users write this in TOML and it works first try, after the compiler spends 90 seconds thinking about it. Look at your command and feel something:", d.cmd)
+			fmt.eprintln(
+				"Your default launch didn't. Alacritty users write this in TOML and it works first try, after the compiler spends 90 seconds thinking about it. Look at your command and feel something:",
+				d.cmd,
+			)
 		}
 	}
 }
@@ -101,7 +104,12 @@ CreateWindowTreeRoot :: proc() -> mem.Handle {
 // split left/up 即"新窗在左/上、原窗在右/下"(默认 false = 右/下)。
 // factor = 原窗(首子)占比(0.05..0.95 由 TreeNodeSetSplitFactor 校验;<= 0 = 0.5)。
 // 树级 TreeNodeSplit 保持纯结构;默认启动配置在用户语义层(SplitNewWindow)应用。
-SplitNewWindow :: proc(dir : SplitType, id : mem.Handle = {}, new_on_first := false, factor : f32 = 0.5) -> mem.Handle {
+SplitNewWindow :: proc(
+	dir: SplitType,
+	id: mem.Handle = {},
+	new_on_first := false,
+	factor: f32 = 0.5,
+) -> mem.Handle {
 	if singleGuard() {
 		return {} // 单窗模式:分屏禁
 	}
@@ -139,7 +147,7 @@ SplitNewWindow :: proc(dir : SplitType, id : mem.Handle = {}, new_on_first := fa
 
 // 删除 id(或焦点)window:关闭其 console 应用 + 会话,释放窗口,并从树中摘除。
 // 目标是唯一剩余窗口(根)时,清空整个树(所有窗口关闭 = 程序可退出)。
-DestroyWindow :: proc(id : mem.Handle = {}) -> bool {
+DestroyWindow :: proc(id: mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return false
@@ -150,7 +158,7 @@ DestroyWindow :: proc(id : mem.Handle = {}) -> bool {
 	}
 	// 单窗模式:被销毁 = 该页 Single 的显示中焦点窗 → 先自动回 Tiled,再走一般销毁
 	// (展示目标失效,树不可再无遮挡恢复;隐藏窗/后台页销毁则模式保留)。
-	it : mem.Iter(MAX_PAGE_SLOTS, Page) = mem.All(&pages)
+	it: mem.Iter(MAX_PAGE_SLOTS, Page) = mem.All(&pages)
 	for ph in mem.next(&it) {
 		if p := mem.Get(&pages, ph); p != nil && p.view_mode == .Single && p.focused == node_h {
 			p.view_mode = .Tiled
@@ -168,7 +176,7 @@ DestroyWindow :: proc(id : mem.Handle = {}) -> bool {
 	// 变动前:图 BFS 定位最近窗叶,记录其 console_id —— 节点句柄会被摘除/
 	// 吸收(提升)改变,console 句柄稳定,变动后按 id 全树找回。
 	nearest := nearestWindowLeaf(node_h)
-	target_console := mem.Handle {}
+	target_console := mem.Handle{}
 	if nearest.id != 0 {
 		if nn := GetWindowTreeNode(nearest); nn != nil {
 			target_console = nn.console_id
@@ -179,9 +187,9 @@ DestroyWindow :: proc(id : mem.Handle = {}) -> bool {
 	// 必须在 PageClearFocus 之前 —— 它会把当前页焦点改成"整树第一个有窗叶",
 	// 导致本分支永远不命中(旧 bug:焦点跳"1"的根源)。
 	if CurrentPage().focused == node_h {
-		f := mem.Handle {}
+		f := mem.Handle{}
 		if target_console.id != 0 {
-			stack : [MAX_TREE_NODE_SLOTS]mem.Handle
+			stack: [MAX_TREE_NODE_SLOTS]mem.Handle
 			top := 1
 			stack[0] = WindowTreeRoot()
 			for top > 0 && f.id == 0 {
@@ -223,7 +231,7 @@ DestroyWindow :: proc(id : mem.Handle = {}) -> bool {
 // 分割配置
 // ---------------------------------------------------------------------------
 // 设置 id(或焦点)窗格父节点的 split_factor(0.05..0.95)
-SetSplitFactor :: proc(factor : f32, id : mem.Handle = {}) -> bool {
+SetSplitFactor :: proc(factor: f32, id: mem.Handle = {}) -> bool {
 	if singleGuard() {
 		return false // 单窗模式:尺寸调整禁
 	}
@@ -241,7 +249,7 @@ SetSplitFactor :: proc(factor : f32, id : mem.Handle = {}) -> bool {
 // 切换 id(或焦点)窗格父节点的分割轴(左右 ⇄ 上下)。与 SetSplitFactor 同构:
 // 轴挂在内部节点上,所以作用对象是父节点;几何由 TreeNodeSetSplitType 内的
 // RecalculateTransforms 重算(两轴对称)。焦点即根叶(单窗)= 无可切的分割 → false。
-ToggleSplitType :: proc(id : mem.Handle = {}) -> bool {
+ToggleSplitType :: proc(id: mem.Handle = {}) -> bool {
 	if singleGuard() {
 		return false // 单窗模式:轴切换禁
 	}
@@ -253,12 +261,15 @@ ToggleSplitType :: proc(id : mem.Handle = {}) -> bool {
 	if parent == nil {
 		return false
 	}
-	return TreeNodeSetSplitType(node.parent_id, parent.split_type == .LeftRight ? .UpDown : .LeftRight)
+	return TreeNodeSetSplitType(
+		node.parent_id,
+		parent.split_type == .LeftRight ? .UpDown : .LeftRight,
+	)
 }
 
 // 与 id(或焦点)窗格的 dir 方向邻居交换内容:只交换两节点的 console_id,
 // 树结构不变。focus 跟随内容:交换后焦点迁往持有"原焦点 console"的节点。
-ExchangeWindow :: proc(dir : FocusDirection, id : mem.Handle = {}) -> bool {
+ExchangeWindow :: proc(dir: FocusDirection, id: mem.Handle = {}) -> bool {
 	if singleGuard() {
 		return false // 单窗模式:交换禁
 	}
@@ -287,7 +298,7 @@ ExchangeWindow :: proc(dir : FocusDirection, id : mem.Handle = {}) -> bool {
 // 设置先序叶子序号(1-based)认领的 split 节点 factor;无认领(最右叶/越界)返回 false。
 // 认领覆盖全部 split(每个内部节点恰一个认领叶),叶子序号即所有 split_factor
 // 的统一索引。认领表内嵌于 LeafSplitOwner(局部性,不落包状态)。
-SetSplitFactorLeaf :: proc(n : int, factor : f32) -> bool {
+SetSplitFactorLeaf :: proc(n: int, factor: f32) -> bool {
 	if singleGuard() {
 		return false // 单窗模式:尺寸调整禁
 	}
@@ -302,7 +313,7 @@ SetSplitFactorLeaf :: proc(n : int, factor : f32) -> bool {
 }
 
 // 查询 id(或焦点)窗格父节点的 split_factor(根窗无父 = false)
-GetSplitFactor :: proc(id : mem.Handle = {}) -> (f32, bool) {
+GetSplitFactor :: proc(id: mem.Handle = {}) -> (f32, bool) {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return 0, false
@@ -333,23 +344,31 @@ GetSplitFactor :: proc(id : mem.Handle = {}) -> (f32, bool) {
 // cn_name 空 = 用 font 模块的中文候选表取第一个能加载的(即"没显式配中文"的旧行为)。
 // 空窗格自动创建 console(字体集住在 console 里)。
 // 两个字体在 FontSetCreate 里按**同一 em** 加载 —— 汉字与拉丁等大、字符格由主字体定。
-SetConsoleFontSet :: proc(main_name, cn_name : string, size : f32, id : mem.Handle = {}) -> bool {
+SetConsoleFontSet :: proc(main_name, cn_name: string, size: f32, id: mem.Handle = {}) -> bool {
 	if len(main_name) == 0 || size <= 0 {
 		return false // 空名称/非法字号不是合法输入
 	}
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
-		fmt.eprintln("SCF: that handle points at nothing. You're dressing a mannequin that was never shipped.")
+		fmt.eprintln(
+			"SCF: that handle points at nothing. You're dressing a mannequin that was never shipped.",
+		)
 		return false
 	}
 	console := ensureConsole(node_h)
 	if console == nil {
-		fmt.eprintln("SCF: the node's real, but there's no console in it. You knocked on a door that was painted on.")
+		fmt.eprintln(
+			"SCF: the node's real, but there's no console in it. You knocked on a door that was painted on.",
+		)
 		return false
 	}
 	new_set, ok := FontSetCreate(main_name, cn_name, size)
 	if !ok {
-		fmt.eprintln("SCF: FontSetCreate choked on it. kitty would have quietly picked six fallbacks and shaped around your mistake. Wrong path, wrong size, or a file that lies about being a font:", main_name, size)
+		fmt.eprintln(
+			"SCF: FontSetCreate choked on it. kitty would have quietly picked six fallbacks and shaped around your mistake. Wrong path, wrong size, or a file that lies about being a font:",
+			main_name,
+			size,
+		)
 		return false
 	}
 	// 先拿到新集再放旧的:同字体重载时 LoadFont 先 +1 后 -1,净零,不闪空窗
@@ -359,13 +378,13 @@ SetConsoleFontSet :: proc(main_name, cn_name : string, size : f32, id : mem.Hand
 }
 
 // 兼容入口:只给主字体(中文字体走候选表)。命令 `font` / 配置里的历史写法走这里。
-SetConsoleFont :: proc(path : string, size : f32, id : mem.Handle = {}) -> bool {
+SetConsoleFont :: proc(path: string, size: f32, id: mem.Handle = {}) -> bool {
 	return SetConsoleFontSet(path, "", size, id)
 }
 
 // 设置 id(或焦点)窗格的字体大小(整集重载:从**句柄自身**取路径,两个字体一起重建,
 // 保证 em 对齐与格宽同步;失败保留旧字体集)
-SetConsoleFontSize :: proc(size : f32, id : mem.Handle = {}) -> bool {
+SetConsoleFontSize :: proc(size: f32, id: mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return false
@@ -384,7 +403,7 @@ SetConsoleFontSize :: proc(size : f32, id : mem.Handle = {}) -> bool {
 }
 
 // 增量改字号(绑定 FontSizeUp/Down 的目标;步长由调用方给,命令层用 ±2)
-AdjustConsoleFontSize :: proc(delta : f32, id : mem.Handle = {}) -> bool {
+AdjustConsoleFontSize :: proc(delta: f32, id: mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return false
@@ -402,15 +421,19 @@ AdjustConsoleFontSize :: proc(delta : f32, id : mem.Handle = {}) -> bool {
 
 // 清空 id(或焦点)窗格的会话:销毁 ConPTY + 缓冲,console 与字体保留,
 // 之后可再次 LaunchConsole。与 DestroyWindow 不同,不删窗格。
-ClearConsoleSession :: proc(id : mem.Handle = {}) -> bool {
+ClearConsoleSession :: proc(id: mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
-		fmt.eprintln("CCS: no such node. Wiping a session off a thing that never existed is a very specific kind of denial.")
+		fmt.eprintln(
+			"CCS: no such node. Wiping a session off a thing that never existed is a very specific kind of denial.",
+		)
 		return false
 	}
 	console_h := NodeConsoleId(node_h)
 	if console_h.id == 0 {
-		fmt.eprintln("CCS: that node never had a console. You cleared nothing and you feel lighter, don't you? That's the scary part.")
+		fmt.eprintln(
+			"CCS: that node never had a console. You cleared nothing and you feel lighter, don't you? That's the scary part.",
+		)
 		return false
 	}
 	return consoleClearSession(console_h)
@@ -424,7 +447,7 @@ ClearConsoleSession :: proc(id : mem.Handle = {}) -> bool {
 // 目标 = id(或焦点)窗格的 console;空窗格(无 console)= 失败。
 // 失败情形:空窗格、池满(信道上限 = MAX_COMMAND_POLLS-1,命令栏自占一条)。
 // 返回 (成功, 结果状态);已授权时再 `on` 是幂等成功。
-SetOscAuthorized :: proc(on : bool, id : mem.Handle = {}) -> (ok : bool, now_on : bool) {
+SetOscAuthorized :: proc(on: bool, id: mem.Handle = {}) -> (ok: bool, now_on: bool) {
 	console := NodeConsole(resolveWindow(id))
 	if console == nil {
 		return false, false
@@ -445,7 +468,7 @@ SetOscAuthorized :: proc(on : bool, id : mem.Handle = {}) -> (ok : bool, now_on 
 }
 
 // 翻转授权(命令无参数时用);返回 (成功, 结果状态)
-ToggleOscAuthorized :: proc(id : mem.Handle = {}) -> (ok : bool, now_on : bool) {
+ToggleOscAuthorized :: proc(id: mem.Handle = {}) -> (ok: bool, now_on: bool) {
 	console := NodeConsole(resolveWindow(id))
 	if console == nil {
 		return false, false
@@ -460,10 +483,12 @@ ToggleOscAuthorized :: proc(id : mem.Handle = {}) -> (ok : bool, now_on : bool) 
 //   - 窗格空闲(无 console 或无会话)→ 就地启动
 //   - 已绑会话 → 自动 split 出兄弟窗格(继承字体)再启动,新窗成为焦点
 //   - 明确失败:无可启动节点 / 无字体
-LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
+LaunchConsole :: proc(cmd: string, id: mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
-		fmt.eprintln("LC: can't launch into a node that isn't there. Go be real somewhere else, then come back.")
+		fmt.eprintln(
+			"LC: can't launch into a node that isn't there. Go be real somewhere else, then come back.",
+		)
 		return false
 	}
 	console_h := NodeConsoleId(node_h)
@@ -489,12 +514,16 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 	if console != nil && console.conpty_handle.id != 0 {
 		_, new_h, ok := TreeNodeSplit(node_h, .LeftRight, 0.5)
 		if !ok {
-			fmt.eprintln("LC: tried to split your pane to make room and the tree shut its legs. Even your data structure is done with you.")
+			fmt.eprintln(
+				"LC: tried to split your pane to make room and the tree shut its legs. Even your data structure is done with you.",
+			)
 			return false
 		}
 		new_console := ensureConsole(new_h)
 		if new_console == nil {
-			fmt.eprintln("LC: split worked and the new pane came out hollow. You built an extra room and forgot the floor.")
+			fmt.eprintln(
+				"LC: split worked and the new pane came out hollow. You built an extra room and forgot the floor.",
+			)
 			return false
 		}
 		inheritConsoleFontSet(new_console, console) // 继承完整字体集;引用 ×4
@@ -502,7 +531,9 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 		node_h, console_h, console = new_h, NodeConsoleId(new_h), new_console
 	}
 	if console == nil || fnt.GetFont(console.font_set.main_font) == nil {
-		fmt.eprintln("LC: no font -> no cell size -> no console. Alacritty would have silently used a fallback font and let you be wrong. SetConsoleFont first, genius.")
+		fmt.eprintln(
+			"LC: no font -> no cell size -> no console. Alacritty would have silently used a fallback font and let you be wrong. SetConsoleFont first, genius.",
+		)
 		return false // 未设置字体,先 SetConsoleFont
 	}
 	// 会话尺寸 = **当前几何算出来的真实网格**,不是写死的 80x24(旧行为)。
@@ -514,23 +545,35 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 	if r, c, gok := ConsoleGridForRect(console, WindowEffectiveRect(node_h)); gok {
 		rows, cols = r, c
 	} else {
-		fmt.eprintln("LC: 拿不到几何/字体度量,回退 80x24 建会话(尺寸要等 resize 纠正):", cmd)
+		fmt.eprintln(
+			"LC: 拿不到几何/字体度量,回退 80x24 建会话(尺寸要等 resize 纠正):",
+			cmd,
+		)
 	}
 
 	conpty_h, ok := ct.CreateConptyContext({i16(cols), i16(rows)}, cmd, source_cwd)
 	if !ok {
-		fmt.eprintln("LC: CreateConptyContext died before foreplay. Your command is wrong, cursed, or both:", cmd)
+		fmt.eprintln(
+			"LC: CreateConptyContext died before foreplay. Your command is wrong, cursed, or both:",
+			cmd,
+		)
 		return false
 	}
 	if !ct.StartReadThread(conpty_h) {
-		fmt.eprintln("LC: pty is up, read thread won't start. You built a mouth and forgot the ears. Useless:", cmd)
+		fmt.eprintln(
+			"LC: pty is up, read thread won't start. You built a mouth and forgot the ears. Useless:",
+			cmd,
+		)
 		ct.DestroyConpty(conpty_h)
 		return false
 	}
 	// console 已存在(字体集在内):就地绑会话;不存在则新建
 	if console_h.id != 0 {
 		if !consoleStartSession(console_h, conpty_h, rows, cols) {
-			fmt.eprintln("LC: the pty was already in and the session still wouldn't start. Performance issues. I'm pulling out — you get nothing:", cmd)
+			fmt.eprintln(
+				"LC: the pty was already in and the session still wouldn't start. Performance issues. I'm pulling out — you get nothing:",
+				cmd,
+			)
 			ct.StopReadThread(conpty_h)
 			ct.DestroyConpty(conpty_h)
 			return false
@@ -538,7 +581,10 @@ LaunchConsole :: proc(cmd : string, id : mem.Handle = {}) -> bool {
 	} else {
 		new_h, cok := CreateConsole(rows, cols, conpty_h)
 		if !cok {
-			fmt.eprintln("LC: couldn't create the console itself. kitty does consoles, images and a scripting language, and it's one guy. You have a pty, a font, and nowhere to put them:", cmd)
+			fmt.eprintln(
+				"LC: couldn't create the console itself. kitty does consoles, images and a scripting language, and it's one guy. You have a pty, a font, and nowhere to put them:",
+				cmd,
+			)
 			ct.StopReadThread(conpty_h)
 			ct.DestroyConpty(conpty_h)
 			return false
@@ -578,7 +624,7 @@ FocusedAppTitle :: proc() -> string {
 // 通过 conpty 向 id(或焦点)窗格的会话输入字符串。
 // 用户输入统一语义:退出 review(历史查看 → 输入即回实时)+ 活动标记
 // (输入期间光标暂停闪烁,render 消费)+ 写 ConPTY。
-FeedConsole :: proc(data : []byte, id : mem.Handle = {}) -> bool {
+FeedConsole :: proc(data: []byte, id: mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return false
@@ -600,17 +646,17 @@ FeedConsole :: proc(data : []byte, id : mem.Handle = {}) -> bool {
 // 返回 true = 仍有窗格(主循环继续);false = 所有窗格已关闭(程序可退出)。
 PollSessions :: proc() -> bool {
 	// 遍历(所有页,不只当前页):窗格在 = 程序继续;会话 ended 跨页收集
-	ended : [MAX_TREE_NODE_SLOTS]mem.Handle
+	ended: [MAX_TREE_NODE_SLOTS]mem.Handle
 	ended_count := 0
 	alive := false
 
-	pit : mem.Iter(MAX_PAGE_SLOTS, Page) = mem.All(&pages)
+	pit: mem.Iter(MAX_PAGE_SLOTS, Page) = mem.All(&pages)
 	for ph in mem.next(&pit) {
 		root := PageTreeRoot(ph)
 		if root.id == 0 {
 			continue
 		}
-		leaves : [MAX_TREE_NODE_SLOTS]mem.Handle
+		leaves: [MAX_TREE_NODE_SLOTS]mem.Handle
 		count := 0
 		collectLeaves(root, &leaves, &count)
 		for i in 0 ..< count {
@@ -644,7 +690,7 @@ PollSessions :: proc() -> bool {
 }
 
 // 消费单个窗格 console 的剩余输出(会话结束前的最后内容)
-consumeConsoleOutput :: proc(node_h : mem.Handle) {
+consumeConsoleOutput :: proc(node_h: mem.Handle) {
 	console := NodeConsole(node_h)
 	if console != nil {
 		UpdateConsole(NodeConsoleId(node_h))
@@ -663,7 +709,7 @@ consumeConsoleOutput :: proc(node_h : mem.Handle) {
 //   n (1..)        = review 模式,值 = 视口顶行物理索引 + 1;绝对锚定:
 //                    新输出到达时不动(视口内容稳定),trim 裁剪时平移补偿
 // 输入即退出 review 由 FeedConsole 统一承担(用户输入语义内聚)。
-ConsoleScroll :: proc(delta : int, id : mem.Handle = {}) -> bool {
+ConsoleScroll :: proc(delta: int, id: mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return false
@@ -688,7 +734,7 @@ ConsoleScroll :: proc(delta : int, id : mem.Handle = {}) -> bool {
 }
 
 // 退出 review 回普通模式(实时跟随);无会话 = false。键盘输入路径见 FeedConsole。
-ConsoleExitReview :: proc(id : mem.Handle = {}) -> bool {
+ConsoleExitReview :: proc(id: mem.Handle = {}) -> bool {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return false
@@ -704,7 +750,7 @@ ConsoleExitReview :: proc(id : mem.Handle = {}) -> bool {
 //   退出 review 回实时 + **取消选区**。
 // 两者是同一条用户语义 —— "我动手了":动键盘就是新的输入,历史查看与选区都不该继续。
 // 因此不需要在内容写路径上做任何选区平移/自愈(见 selection.odin 的生命周期说明)。
-exitReview :: proc(console : ^Console) -> bool {
+exitReview :: proc(console: ^Console) -> bool {
 	tb := GetTermBuffer(console.active_term_buffer_id)
 	if tb == nil {
 		return false
@@ -718,7 +764,7 @@ exitReview :: proc(console : ^Console) -> bool {
 // 焦点
 // ---------------------------------------------------------------------------
 // 设置 id 为当前焦点
-SetFocusWindow :: proc(id : mem.Handle) -> bool {
+SetFocusWindow :: proc(id: mem.Handle) -> bool {
 	if singleGuard() {
 		return false // 单窗模式:焦点切换禁
 	}
@@ -734,7 +780,7 @@ SetFocusWindow :: proc(id : mem.Handle) -> bool {
 }
 
 // 将 id(或焦点)窗格的 dir 方向邻居设为焦点
-FocusMove :: proc(dir : FocusDirection, id : mem.Handle = {}) -> bool {
+FocusMove :: proc(dir: FocusDirection, id: mem.Handle = {}) -> bool {
 	if singleGuard() {
 		return false // 单窗模式:焦点切换禁
 	}
@@ -776,7 +822,7 @@ ConsoleCount :: proc() -> int {
 // 文本写进 buf(借用,调用期间有效);末尾空白已裁。
 // false = 无窗格/无会话/超出面板行数(面板只有 console.rows 行)。
 // 渲染细节(宽字符续列、行尾空白)归 TermBuffer 自己,见 buffer.odin。配套命令:head。
-ConsoleLineText :: proc(n : int, buf : []u8, id : mem.Handle = {}) -> (text : string, ok : bool) {
+ConsoleLineText :: proc(n: int, buf: []u8, id: mem.Handle = {}) -> (text: string, ok: bool) {
 	console_h := NodeConsoleId(resolveWindow(id))
 	console := GetConsole(console_h)
 	if console == nil || n < 0 || n >= int(console.rows) {
@@ -789,20 +835,20 @@ ConsoleLineText :: proc(n : int, buf : []u8, id : mem.Handle = {}) -> (text : st
 // 窗格信息快照(派生量按值返回,同 fnt.GetMetrics 的做法;font_name 借用 console
 // 持有的字符串,console 销毁即失效 —— 只读展示用)。空窗格 = has_console false。
 ConsoleInfo :: struct {
-	node : mem.Handle,
-	has_console : bool,
-	has_session : bool, // conpty_handle != 0
-	font_name : string, // 主字体解析路径(借自字体表,字体表存活期有效)
-	font_size : f32,
-	bold_face : bool, // 有真 Bold 变体(否则渲染合成)
-	italic_face : bool,
-	bi_face : bool,
-	rows, cols : u16,
-	review_top : u32, // 0 = 普通模式;n (1..) = 回看窗口顶行的行号 + 1
-	split_factor : f32, // 父节点比例(根窗 = 0)
+	node:         mem.Handle,
+	has_console:  bool,
+	has_session:  bool, // conpty_handle != 0
+	font_name:    string, // 主字体解析路径(借自字体表,字体表存活期有效)
+	font_size:    f32,
+	bold_face:    bool, // 有真 Bold 变体(否则渲染合成)
+	italic_face:  bool,
+	bi_face:      bool,
+	rows, cols:   u16,
+	review_top:   u32, // 0 = 普通模式;n (1..) = 回看窗口顶行的行号 + 1
+	split_factor: f32, // 父节点比例(根窗 = 0)
 }
 
-GetConsoleInfo :: proc(id : mem.Handle = {}) -> (info : ConsoleInfo, ok : bool) {
+GetConsoleInfo :: proc(id: mem.Handle = {}) -> (info: ConsoleInfo, ok: bool) {
 	node_h := resolveWindow(id)
 	if node_h.id == 0 {
 		return {}, false
@@ -847,7 +893,7 @@ singleGuard :: proc() -> bool {
 }
 
 // id 省略(0)时解析为当前焦点
-resolveWindow :: proc(id : mem.Handle) -> mem.Handle {
+resolveWindow :: proc(id: mem.Handle) -> mem.Handle {
 	if id.id != 0 {
 		return id
 	}
@@ -862,7 +908,7 @@ resolveWindow :: proc(id : mem.Handle) -> mem.Handle {
 // 录制(命令 rec):把**焦点窗格(或 @id 指定窗格)**的 ConPTY 原始字节流落盘,用于复现
 // 只在别的机器上出现的问题。path 非空 = 开始;空串 = 停止。
 // 回放:playground/widecap/ 的 play 模式(同一解析器,同一画面)。
-ConsoleRecord :: proc(path : string, id : mem.Handle = {}) -> bool {
+ConsoleRecord :: proc(path: string, id: mem.Handle = {}) -> bool {
 	if len(path) == 0 {
 		active := RecordActive()
 		RecordStop()
@@ -878,3 +924,4 @@ ConsoleRecord :: proc(path : string, id : mem.Handle = {}) -> bool {
 	}
 	return RecordStart(console_h, path)
 }
+

@@ -740,12 +740,20 @@ ParseCommandStringEx :: proc(s : string, errbuf : []u8) -> (pc : ParsedCommand, 
 			pc.dir = dir
 			pc.split_first = first
 		case .FocusArg:
+			// 数字/方向只是参数;**kind 改判只属于 focus 命令**(spec.kind == .FocusId)。
+			// exchange 也用 FocusArg,但必须保持 .Exchange —— 旧实现无条件改判,
+			// `exchange left` 被解析成 .FocusDir,快捷键触发的是 FocusMove,永远到不了
+			// ExchangeWindow(命令栏里执行也一样)。
 			if id, idok := parseU32(tok); idok {
-				pc.kind = .FocusId
 				pc.target = cv.NodeHandleById(id)
+				if spec.kind == .FocusId {
+					pc.kind = .FocusId
+				}
 			} else if d, dok := parseFocusDir(tok); dok {
-				pc.kind = .FocusDir
 				pc.fdir = d
+				if spec.kind == .FocusId {
+					pc.kind = .FocusDir
+				}
 			} else {
 				return {}, usageText(errbuf, spec, "需要 id 或方向"), false
 			}
